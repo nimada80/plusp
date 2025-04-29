@@ -51,9 +51,9 @@ CORS_ALLOW_METHODS = [
 # Configure CSRF and session cookies to work with cross-site React app
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
 # Configure session and CSRF cookies to work with cross-site React app
-SESSION_COOKIE_SAMESITE = None
+SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SAMESITE = None
+CSRF_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = False
 
 # Application definition
@@ -155,6 +155,8 @@ FORCE_SCRIPT_NAME = '/backend'
 USE_X_FORWARDED_HOST = True
 STATIC_URL = '/backend/static/'
 MEDIA_URL = '/backend/media/'
+
+CSRF_TRUSTED_ORIGINS = ['http://localhost']
 
 STATIC_URL = "static/"
 
