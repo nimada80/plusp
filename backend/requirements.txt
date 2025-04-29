@@ -1,0 +1,7 @@
+Django>=4.2
+python-dotenv
+djangorestframework
+psycopg2-binary
+supabase
+django-cors-headers
+gunicorn

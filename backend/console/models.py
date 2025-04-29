@@ -1,0 +1,89 @@
+"""
+console/models.py
+Defines ORM models for the console app:
+- generate_unique_id: helper to produce a unique random integer for fields.
+- Channel: model with auto-generated unique channel_id, name, and ManyToMany link to User.
+- User: custom user model mapping to 'users' table with credentials and role.
+"""
+
+from django.db import models
+
+import random
+from django.db import models
+from django.core.exceptions import ValidationError
+
+MIN_ID = 1000000
+MAX_ID = 9999999
+
+def generate_unique_id(model, field_name):
+    """
+    Generate a random integer between MIN_ID and MAX_ID that is unique
+    for the given model field (e.g. Channel.channel_id).
+    """
+    while True:
+        value = random.randint(MIN_ID, MAX_ID)
+        if not model.objects.filter(**{field_name: value}).exists():
+            return value
+
+class Channel(models.Model):
+    """
+    Channel model with:
+    - channel_id: unique random integer identifier
+    - name: channel display name
+    - authorized_users: users permitted to access this channel
+    """
+    # Unique, non-editable random ID generated on save
+    channel_id = models.PositiveIntegerField(unique=True, editable=False, null=False)
+    # Human-readable channel name
+    name = models.CharField(max_length=255)
+    # Many-to-many relation to console.User for access control
+    authorized_users = models.ManyToManyField(
+        'User', blank=True, related_name='allowed_channels'
+    )
+
+    def save(self, *args, **kwargs):
+        # On first save, assign a unique channel_id
+        if not self.channel_id:
+            self.channel_id = generate_unique_id(Channel, 'channel_id')
+        # Validate channel_id remains within defined bounds
+        if not (MIN_ID <= self.channel_id <= MAX_ID):
+            raise ValidationError(
+                f'channel_id must be between {MIN_ID} and {MAX_ID}'
+            )
+        # Proceed with normal save
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        # String representation returns channel name
+        return self.name
+
+class User(models.Model):
+    """
+    Custom user model stored in 'users' table:
+    - id: primary key
+    - username: unique login name
+    - password: hashed credential
+    - role: user role identifier
+    - active: account status flag
+    - created_at: timestamp of account creation
+    """
+    # Maps to existing 'users' DB table
+    id = models.BigAutoField(primary_key=True)
+    # Unique username used for authentication
+    username = models.CharField(max_length=150, unique=True)
+    # Store hashed password
+    password = models.CharField(max_length=128)
+    # Role string (e.g., 'admin', 'regular')
+    role = models.CharField(max_length=20)
+    # Soft-delete or activation flag
+    active = models.BooleanField(default=True)
+    # Auto-generated creation timestamp
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Explicit table name in database
+        db_table = 'users'
+
+    def __str__(self):
+        # String representation returns username
+        return self.username
