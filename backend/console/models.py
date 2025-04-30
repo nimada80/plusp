@@ -4,6 +4,7 @@ Defines ORM models for the console app:
 - generate_unique_id: helper to produce a unique random integer for fields.
 - Channel: model with auto-generated unique channel_id, name, and ManyToMany link to User.
 - User: custom user model mapping to 'users' table with credentials and role.
+- SuperAdmin: model for storing super admin credentials and user limits.
 """
 
 from django.db import models
@@ -87,3 +88,38 @@ class User(models.Model):
     def __str__(self):
         # String representation returns username
         return self.username
+
+class SuperAdmin(models.Model):
+    """
+    Super Admin model for storing admin credentials and user limits:
+    - id: primary key
+    - super_admin_id: unique random identifier
+    - admin_super_user: super admin username
+    - admin_super_password: hashed super admin password
+    - user_limit: maximum number of users allowed
+    - user_count: current number of users (default 0)
+    - creation_date: when this super admin was created
+    - created_by: username of the creator
+    """
+    id = models.BigAutoField(primary_key=True)
+    super_admin_id = models.PositiveIntegerField(unique=True, editable=False, null=True)
+    admin_super_user = models.CharField(max_length=150, unique=True, verbose_name="Super Admin name")
+    admin_super_password = models.CharField(max_length=128, verbose_name="Super Admin password")
+    user_limit = models.PositiveIntegerField(verbose_name="User Limit")
+    user_count = models.PositiveIntegerField(default=0, verbose_name="User Count")
+    creation_date = models.DateTimeField(auto_now_add=True)
+    created_by = models.CharField(max_length=150)
+
+    class Meta:
+        db_table = 'super_admin'
+        verbose_name = 'Super Admin'
+        verbose_name_plural = 'Super Admins'
+
+    def save(self, *args, **kwargs):
+        # On first save, assign a unique super_admin_id
+        if not self.super_admin_id:
+            self.super_admin_id = generate_unique_id(SuperAdmin, 'super_admin_id')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.admin_super_user

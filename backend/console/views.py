@@ -9,8 +9,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from .models import Channel, User
-from .serializers import ChannelSerializer, UserSerializer
+from .models import Channel, User, SuperAdmin
+from .serializers import ChannelSerializer, UserSerializer, SuperAdminSerializer
 from django.contrib.auth.hashers import make_password
 import random
 from rest_framework import viewsets, status
@@ -69,6 +69,16 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+        
+        # افزایش شمارنده تعداد کاربران در SuperAdmin
+        try:
+            super_admin = SuperAdmin.objects.using('supabase').first()
+            if super_admin:
+                super_admin.user_count += 1
+                super_admin.save(using='supabase')
+        except Exception as e:
+            print(f"Error updating user count: {e}")
+            
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
@@ -88,13 +98,57 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         return Response(serializer.data)
+    
+    def destroy(self, request, *args, **kwargs):
+        # کاهش شمارنده تعداد کاربران در SuperAdmin
+        try:
+            super_admin = SuperAdmin.objects.using('supabase').first()
+            if super_admin and super_admin.user_count > 0:
+                super_admin.user_count -= 1
+                super_admin.save(using='supabase')
+        except Exception as e:
+            print(f"Error updating user count: {e}")
+            
+        return super().destroy(request, *args, **kwargs)
+
+class SuperAdminViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for SuperAdmin model.
+    Provides CRUD operations for super admin credentials and user limits.
+    Only accessible to authenticated users with proper permissions.
+    """
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+    queryset = SuperAdmin.objects.using('supabase').all()
+    serializer_class = SuperAdminSerializer
+    
+    def create(self, request, *args, **kwargs):
+        # Handle super admin creation with validation
+        data = request.data.copy()
+        
+        # بررسی داده‌های ورودی
+        if not data.get('admin_super_user') or not data.get('admin_super_password') or not data.get('user_limit'):
+            return Response({'error': 'اطلاعات ناقص است.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # بررسی تکراری نبودن نام کاربری سوپر ادمین
+        if SuperAdmin.objects.using('supabase').filter(admin_super_user=data['admin_super_user']).exists():
+            return Response({'error': 'این نام کاربری سوپر ادمین قبلا ثبت شده است.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # اضافه کردن نام کاربر ایجاد کننده
+        data['created_by'] = request.user.username
+        
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 @csrf_exempt
 @api_view(['POST', 'OPTIONS'])
 @authentication_classes([])
 @permission_classes([AllowAny])
 def login_view(request):
-    """Authenticate user credentials and start a session. Returns success flag."""
+    """Authenticate credentials against SuperAdmin and start a session. Returns success flag."""
     # Handle OPTIONS request for CORS preflight
     if request.method == 'OPTIONS':
         response = Response()
@@ -109,10 +163,11 @@ def login_view(request):
     username = request.data.get('username')
     password = request.data.get('password')
     
-    # معتبرسازی مستقیم از مدل User با بانک اطلاعاتی supabase
+    # معتبرسازی از مدل SuperAdmin با بانک اطلاعاتی supabase
     try:
-        user_obj = User.objects.using('supabase').get(username=username)
-        if check_password(password, user_obj.password):
+        # جستجوی نام کاربری در جدول SuperAdmin
+        admin_obj = SuperAdmin.objects.using('supabase').get(admin_super_user=username)
+        if check_password(password, admin_obj.admin_super_password):
             # اگر احراز هویت موفق بود، کاربر Django را پیدا یا ایجاد کنیم
             django_user, created = DjangoUser.objects.get_or_create(username=username)
             if created:
@@ -128,10 +183,10 @@ def login_view(request):
                 response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
                 response['Access-Control-Allow-Credentials'] = 'true'
             return response
-    except User.DoesNotExist:
-        pass  # کاربر پیدا نشد، خطا برگردانده می‌شود
+    except SuperAdmin.DoesNotExist:
+        pass  # سوپر ادمین پیدا نشد، خطا برگردانده می‌شود
     
-    return Response({'error': 'نام کاربری یا رمز عبور اشتباه است.'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'error': 'نام کاربری یا رمز عبور سوپر ادمین اشتباه است.'}, status=status.HTTP_400_BAD_REQUEST)
 
 @csrf_exempt
 @api_view(['POST', 'OPTIONS'])
@@ -176,19 +231,23 @@ def user_view(request):
     # Django user model info
     django_user = request.user
     
-    # Try to get console User model corresponding to authenticated user
+    # Try to get SuperAdmin model corresponding to authenticated user
     try:
-        user = User.objects.using('supabase').get(username=django_user.username)
+        super_admin = SuperAdmin.objects.using('supabase').get(admin_super_user=django_user.username)
         data = {
-            'id': user.id,
-            'username': user.username,
-            'role': user.role,
-            'is_authenticated': True
+            'id': super_admin.id,
+            'username': super_admin.admin_super_user,
+            'role': 'super_admin',  # نقش سوپر ادمین
+            'is_authenticated': True,
+            'user_limit': super_admin.user_limit,
+            'user_count': super_admin.user_count
         }
-    except User.DoesNotExist:
+    except SuperAdmin.DoesNotExist:
+        # سوپر ادمین پیدا نشد، اطلاعات ساده ارسال می‌شود
         data = {
             'username': django_user.username,
-            'is_authenticated': True
+            'is_authenticated': True,
+            'role': 'unknown'
         }
     
     response = Response(data)
