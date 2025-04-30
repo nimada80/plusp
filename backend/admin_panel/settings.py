@@ -31,13 +31,36 @@ ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 # CORS configuration to allow requests from React dev server
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
+    'http://localhost:3010',
+    'http://localhost',
 ]
 
 # Allow all origins in development
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
 # Allow cookies (credentials) from API calls
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGIN_REGEXES = [r"^http://localhost:3000$"]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://localhost:3000$", 
+    r"^http://localhost:3010$",
+    r"^http://localhost$"
+]
+
+# اضافه کردن تنظیمات CORS_URLS_REGEX برای محدود کردن CORS به مسیرهای معین
+CORS_URLS_REGEX = r'^/(api|backend)/.*$'
+
+# تنظیم هدرها برای اطمینان از عملکرد درست CORS
+CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
 
 CORS_ALLOW_METHODS = [
     'DELETE',
@@ -49,7 +72,7 @@ CORS_ALLOW_METHODS = [
 ]
 
 # Configure CSRF and session cookies to work with cross-site React app
-CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
+CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:3010', 'http://localhost']
 # Configure session and CSRF cookies to work with cross-site React app
 SESSION_COOKIE_SAMESITE = 'Lax'
 SESSION_COOKIE_SECURE = False
@@ -164,8 +187,6 @@ USE_X_FORWARDED_HOST = True
 STATIC_URL = '/backend/static/'
 MEDIA_URL = '/backend/media/'
 
-CSRF_TRUSTED_ORIGINS = ['http://localhost']
-
 STATIC_URL = "static/"
 
 # Default primary key field type
@@ -184,3 +205,9 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ],
 }
+
+# وارد کردن تنظیمات محلی
+try:
+    from .local_settings import *
+except ImportError:
+    pass

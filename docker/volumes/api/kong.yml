@@ -34,6 +34,37 @@ basicauth_credentials:
 ### API Routes
 ###
 services:
+  ## Backend API routes
+  - name: api-auth
+    _comment: 'Backend API: /api/auth/* -> http://plusptt-backend:8010/api/auth/*'
+    url: http://plusptt-backend:8010/api/auth/
+    routes:
+      - name: api-auth
+        strip_path: false
+        paths:
+          - /api/auth/
+    plugins:
+      - name: cors
+        config:
+          origins:
+            - http://localhost:3010
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Accept-Version
+            - Authorization
+            - Content-Type
+            - Origin
+            - X-CSRF-Token
+            - X-Requested-With
+          credentials: true
+          max_age: 3600
+  
   ## Open Auth routes
   - name: auth-v1-open
     url: http://auth:9999/verify
