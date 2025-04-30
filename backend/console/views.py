@@ -62,7 +62,9 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # هش کردن رمز عبور و استفاده از فیلد 'password'
         if 'password' in data:
+            print(f"BEFORE HASHING: {data['password'][:3]}...")  # Debug - only show first few chars
             data['password'] = make_password(data['password'])
+            print(f"AFTER HASHING: {data['password'][:20]}...")  # Debug
         
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
@@ -78,7 +80,9 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # اگر رمز عبور در داده‌های ورودی باشد، آن را هش می‌کنیم
         if 'password' in data:
+            print(f"UPDATE - BEFORE HASHING: {data['password'][:3]}...")  # Debug
             data['password'] = make_password(data['password'])
+            print(f"UPDATE - AFTER HASHING: {data['password'][:20]}...")  # Debug
         
         serializer = self.get_serializer(instance, data=data, partial=partial)
         serializer.is_valid(raise_exception=True)

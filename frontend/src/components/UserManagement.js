@@ -281,6 +281,12 @@ function UserManagement() {
       payload.password = formData.password;
     }
 
+    // Debug log - برای مشاهده اطلاعات ارسالی (بدون نمایش کامل پسورد)
+    console.log('Sending user data:', {
+      ...payload,
+      password: payload.password ? `${payload.password.substring(0, 3)}...` : undefined
+    });
+
     try {
       if (editMode && selectedUser) {
         await apiFetch(`/api/users/${selectedUser.id}/`, {

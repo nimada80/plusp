@@ -19,7 +19,19 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         # Specifies model and fields to include in API
         model = User
-        fields = ['id', 'username', 'active', 'role', 'channels']
+        fields = ['id', 'username', 'password', 'role', 'active', 'created_at', 'channels']
+        # password should be write-only to avoid returning it in responses
+        extra_kwargs = {'password': {'write_only': True}}
+
+    def create(self, validated_data):
+        """Create a new user with validated data"""
+        print(f"CREATE - IN SERIALIZER: {validated_data.get('password', 'No password')[:20]}...")  # Debug
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        """Update a user with validated data"""
+        print(f"UPDATE - IN SERIALIZER: {validated_data.get('password', 'No password')[:20]}...")  # Debug
+        return super().update(instance, validated_data)
 
 class ChannelSerializer(serializers.ModelSerializer):
     """Serialize Channel with name, channel_id, and authorized user list."""
