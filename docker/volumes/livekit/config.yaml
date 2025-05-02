@@ -1,0 +1,46 @@
+port: 7880
+rtc:
+  port_range_start: 7882
+  port_range_end: 7882
+  tcp_port: 7882
+
+# تنظیمات کدک و کیفیت ویدیو و صدا
+video:
+  max_bandwidth_bits: 3000000        # 3 Mbps حداکثر پهنای باند
+  max_input_bandwidth_bits: 10000000 # 10 Mbps حداکثر ورودی
+  max_bitrate_bps: 3000000           # 3 Mbps حداکثر بیت‌ریت
+  min_bitrate_bps: 100000            # 100 Kbps حداقل بیت‌ریت
+  simulcast: true                     # فعال‌سازی simulcast برای افزایش کیفیت
+
+# بهینه‌سازی صوت
+audio:
+  min_port: 7882
+  max_port: 7882
+
+# ذخیره‌سازی در Redis
+redis:
+  address: livekit-redis:6379
+  username: "${LIVEKIT_REDIS_USERNAME}"
+  password: "${LIVEKIT_REDIS_PASSWORD}"
+  db: 0
+
+# تنظیمات اتاق
+room:
+  max_participants: 100              # حداکثر تعداد شرکت‌کنندگان در هر اتاق
+  enable_remote_unmute: true        # اجازه غیرفعال کردن صوت از راه دور
+  emit_room_updates: true           # ارسال بروزرسانی‌های اتاق
+  auto_create: true                 # ایجاد خودکار اتاق
+
+# تنظیمات لاگ
+logging:
+  level: info
+  sample_level: warn
+  json: true
+
+# دامنه و سرور
+node_ip: 0.0.0.0
+bind_addresses:
+  - 0.0.0.0
+
+# تنظیمات امنیتی و توکن
+# کلیدها از طریق متغیر محیطی LIVEKIT_KEYS تنظیم می‌شوند 

@@ -20,7 +20,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./volumes/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../backend/static:/app/static:ro
     depends_on:
       - kong
@@ -608,8 +608,44 @@ services:
     environment:
       - REACT_APP_API_BASE_URL=http://localhost
 
+  # سرویس‌های LiveKit
+  livekit:
+    container_name: livekit-server
+    image: livekit/livekit-server:latest
+    command: --config /livekit.yaml
+    ports:
+      - "${LIVEKIT_PORT}:${LIVEKIT_PORT}"
+      - "${LIVEKIT_RTC_MIN_PORT}:${LIVEKIT_RTC_MIN_PORT}"
+      - "${LIVEKIT_RTC_MIN_PORT}-${LIVEKIT_RTC_MAX_PORT}:${LIVEKIT_RTC_MIN_PORT}-${LIVEKIT_RTC_MAX_PORT}/udp"
+      - "${LIVEKIT_RTC_MIN_PORT}-${LIVEKIT_RTC_MAX_PORT}:${LIVEKIT_RTC_MIN_PORT}-${LIVEKIT_RTC_MAX_PORT}/tcp"
+      - "${LIVEKIT_TURN_PORT}:${LIVEKIT_TURN_PORT}/udp"
+      - "${LIVEKIT_TURN_PORT}:${LIVEKIT_TURN_PORT}/tcp"
+    volumes:
+      - ../livekit/livekit.yaml:/livekit.yaml
+    environment:
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY_WITH_SPACE}
+      - LIVEKIT_REDIS_ADDRESS=${LIVEKIT_REDIS_ADDRESS}
+      - LIVEKIT_REDIS_PASSWORD=${LIVEKIT_REDIS_PASSWORD}
+    restart: unless-stopped
+    networks:
+      - default
+    depends_on:
+      - livekit-redis
+      
+  # Redis برای مدیریت جلسات LiveKit
+  livekit-redis:
+    container_name: livekit-redis
+    image: redis:alpine
+    command: redis-server --requirepass ${LIVEKIT_REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - ../livekit/redis-data:/data
+    restart: unless-stopped
+    networks:
+      - default
+
 volumes:
   db-config:
+  livekit-config:
 
 networks:
   default:
