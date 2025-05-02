@@ -1,7 +1,8 @@
-Django>=4.2
-python-dotenv
-djangorestframework
-psycopg2-binary
-supabase
-django-cors-headers
-gunicorn
+Django>=5.2
+python-dotenv>=1.1.0
+djangorestframework>=3.16.0
+psycopg2-binary>=2.9.10
+supabase>=2.15.1
+django-cors-headers>=4.7.0
+gunicorn>=23.0.0
+livekit>=1.0.6
