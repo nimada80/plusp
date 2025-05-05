@@ -18,6 +18,7 @@ const Login = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   /**
@@ -27,32 +28,53 @@ const Login = () => {
    */
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true);
+    setError('');
+    
     const url = `${baseUrl}/api/auth/login/`;
     console.log('Login URL:', url);
+    
     try {
       const res = await fetch(url, {
         method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // مهم برای انتقال کوکی‌ها
+        mode: 'cors', // تصریح که این درخواست CORS است
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ username, password }),
       });
+      
       console.log('Response status:', res.status);
+      console.log('Response headers:', Object.fromEntries([...res.headers.entries()]));
+      
+      // حتی اگر پاسخ OK باشد، اما خطایی در تبدیل به JSON باشد، آن را مدیریت کنیم
+      const rawText = await res.text();
+      console.log('Raw response:', rawText);
+      
+      let data = null;
+      try {
+        // اگر متن خالی نباشد، سعی کنیم آن را به JSON تبدیل کنیم
+        if (rawText && rawText.trim()) {
+          data = JSON.parse(rawText);
+        }
+      } catch (parseErr) {
+        console.error('JSON parse error:', parseErr);
+      }
+      
       if (res.ok) {
+        // اگر لاگین موفق بود، به صفحه اصلی برویم
         navigate('/');
       } else {
-        const rawText = await res.text();
-        console.error('Raw response:', rawText);
-        let data;
-        try {
-          data = await res.json();
-        } catch (parseErr) {
-          console.error('JSON parse error:', parseErr);
-        }
-        setError(data?.error || 'Login failed');
+        // در غیر این صورت، پیام خطا نمایش دهیم
+        setError(data?.error || `Login failed (${res.status}): ${res.statusText}`);
       }
     } catch (err) {
       console.error('Fetch error:', err);
-      setError(err.message);
+      setError(`Connection error: ${err.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -91,6 +113,9 @@ const Login = () => {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             sx={{ mb: 2 }}
+            autoComplete="username"
+            inputProps={{ dir: "rtl" }}
+            disabled={loading}
           />
           <TextField
             label="رمز عبور"
@@ -100,14 +125,22 @@ const Login = () => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             sx={{ mb: 2 }}
+            autoComplete="current-password"
+            inputProps={{ dir: "rtl" }}
+            disabled={loading}
           />
           {error && (
             <Typography color="error" sx={{ mb: 2 }}>
               {error}
             </Typography>
           )}
-          <Button type="submit" variant="contained" fullWidth>
-            ورود
+          <Button 
+            type="submit" 
+            variant="contained" 
+            fullWidth
+            disabled={loading}
+          >
+            {loading ? 'درحال ورود...' : 'ورود'}
           </Button>
         </form>
       </Paper>

@@ -4,7 +4,7 @@
  * Supports dual-list user assignment and CSRF-protected API calls.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Button,
@@ -16,7 +16,6 @@ import {
   List,
   ListItem,
   ListItemText,
-  IconButton,
   Typography,
   Paper,
   Grid,
@@ -27,71 +26,7 @@ import {
   TableHead,
   TableRow,
 } from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
-import EditIcon from '@mui/icons-material/Edit';
-
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
-
-// Helper to read CSRF token cookie
-function getCookie(name) {
-  let cookieValue = null;
-  if (document.cookie && document.cookie !== '') {
-    const cookies = document.cookie.split(';');
-    for (let cookie of cookies) {
-      cookie = cookie.trim();
-      if (cookie.startsWith(name + '=')) {
-        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-        break;
-      }
-    }
-  }
-  return cookieValue;
-}
-
-/**
- * apiFetch
- * Wraps fetch to include CSRF token and error handling.
- * @param {string} url - API endpoint path starting with '/api'
- * @param {object} options - fetch options (method, headers, body)
- * @returns {object|null} JSON response or null for 204
- * @throws {Error} on network or server error
- */
-const apiFetch = async (url, options = {}) => {
-  const defaultOptions = {
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-  };
-  const mergedOptions = {
-    ...defaultOptions,
-    ...options,
-    headers: {
-      ...defaultOptions.headers,
-      ...options.headers,
-    },
-  };
-  // Attach CSRF token
-  const csrftoken = getCookie('csrftoken');
-  if (csrftoken) mergedOptions.headers['X-CSRFToken'] = csrftoken;
-
-  const response = await fetch(`${API_BASE_URL}${url}`, mergedOptions);
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error('API Fetch Error:', response.status, errorBody);
-    throw new Error(`خطا در ارتباط با سرور: ${response.status} ${response.statusText}`);
-  }
-
-  if (response.status === 204 || response.headers.get('content-length') === '0') {
-    return null;
-  }
-
-  try {
-    return await response.json();
-  } catch (e) {
-    console.error('Failed to parse JSON response:', e);
-    throw new Error('پاسخ دریافتی از سرور معتبر نبود.');
-  }
-};
+import { apiFetch } from '../utils/api';
 
 /**
  * ChannelManagement
@@ -128,14 +63,71 @@ function ChannelManagement() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [channelToDelete, setChannelToDelete] = useState(null);
 
+  // Table filter
+  const filteredChannels = useMemo(() => {
+    // محافظت: اطمینان از آرایه بودن channels
+    const safeChannels = Array.isArray(channels) ? channels : [];
+    
+    return safeChannels.filter(c => {
+      if (!c || typeof c !== 'object') return false;
+      if (!c.name) return false;
+      return c.name.toLowerCase().includes((channelSearchQuery || '').toLowerCase());
+    });
+  }, [channels, channelSearchQuery]);
+
   // Fetch all channels from backend
   const fetchChannels = async () => {
     setLoadingChannels(true);
     setError('');
     try {
       const data = await apiFetch('/api/channels/');
-      setChannels(data || []);
+
+      // مدیریت جامع انواع مختلف پاسخ
+      let channelsArray = [];
+
+      if (Array.isArray(data)) {
+        // 1. پاسخ یک آرایه است
+        channelsArray = data;
+      } else if (data && typeof data === 'object') {
+        // 2. پاسخ یک شیء است
+        if (data.channels && Array.isArray(data.channels)) {
+          // 2.1. شیء دارای فیلد channels است
+          channelsArray = data.channels;
+        } else if (data.results && Array.isArray(data.results)) {
+          // 2.2. شیء دارای فیلد results است (برای pagination)
+          channelsArray = data.results;
+        } else if (data.data && Array.isArray(data.data)) {
+          // 2.3. شیء دارای فیلد data است
+          channelsArray = data.data;
+        } else if (Object.keys(data).length === 0) {
+          // 2.4. شیء خالی است - آرایه خالی برگردانیم
+          channelsArray = [];
+        } else if (data.detail || data.message) {
+          // 2.5. شیء حاوی پیام خطا است
+          console.error('API Error:', data.detail || data.message);
+          channelsArray = [];
+        } else {
+          // 2.6. ساختار ناشناخته - سعی کنیم مقادیر را استخراج کنیم
+          console.warn('Unknown response structure:', data);
+          // تبدیل خود شیء به آرایه اگر هیچ ساختار شناخته‌شده‌ای نداشت
+          const possibleItems = Object.values(data).filter(val => 
+            typeof val === 'object' && val !== null
+          );
+          if (possibleItems.length > 0) {
+            channelsArray = possibleItems;
+          } else {
+            channelsArray = [];
+          }
+        }
+      } else {
+        // 3. داده null یا undefined یا نوع دیگری است
+        console.warn('Unexpected response type:', typeof data);
+        channelsArray = [];
+      }
+
+      setChannels(channelsArray);
     } catch (err) {
+      console.error('Error fetching channels:', err);
       setError('خطا در دریافت لیست کانال‌ها. لطفا دوباره تلاش کنید.');
       setChannels([]);
     } finally {
@@ -149,8 +141,17 @@ function ChannelManagement() {
     setError('');
     try {
       const data = await apiFetch('/api/users/');
-      setUsers(data || []);
+      if (!data) {
+        setUsers([]);
+        return;
+      }
+      if (!Array.isArray(data)) {
+        setUsers([]);
+        return;
+      }
+      setUsers(data);
     } catch (err) {
+      console.error('Error fetching users:', err);
       setError('خطا در دریافت لیست کاربران.');
       setUsers([]);
     } finally {
@@ -277,15 +278,73 @@ function ChannelManagement() {
   };
 
   // Dual list details
-  const allowedUsersDetails = users.filter((u) => formData.authorized_users.includes(u.id)).filter((u) =>
-    u.username.toLowerCase().includes(allowedSearchQuery.toLowerCase())
-  );
-  const availableUsersDetails = users.filter((u) => !formData.authorized_users.includes(u.id)).filter((u) =>
-    u.username.toLowerCase().includes(availableSearchQuery.toLowerCase())
-  );
+  const allowedUsersDetails = Array.isArray(users) 
+    ? users.filter((u) => Array.isArray(formData.authorized_users) && formData.authorized_users.includes(u.id))
+          .filter((u) => u.username.toLowerCase().includes((allowedSearchQuery || '').toLowerCase()))
+    : [];
 
-  // Table filter
-  const filteredChannels = channels.filter((c) => c.name.toLowerCase().includes(channelSearchQuery.toLowerCase()));
+  const availableUsersDetails = Array.isArray(users)
+    ? users.filter((u) => !Array.isArray(formData.authorized_users) || !formData.authorized_users.includes(u.id))
+          .filter((u) => u.username.toLowerCase().includes((availableSearchQuery || '').toLowerCase()))
+    : [];
+
+  const renderChannels = () => {
+    if (loadingChannels) {
+      return (
+        <TableRow>
+          <TableCell colSpan={4} align="center">
+            در حال بارگذاری...
+          </TableCell>
+        </TableRow>
+      );
+    }
+
+    if (!Array.isArray(filteredChannels)) {
+      return (
+        <TableRow>
+          <TableCell colSpan={4} align="center">
+            خطا در بارگذاری کانال‌ها
+          </TableCell>
+        </TableRow>
+      );
+    }
+
+    if (filteredChannels.length === 0) {
+      return (
+        <TableRow>
+          <TableCell colSpan={4} align="center">
+            هیچ کانالی یافت نشد
+          </TableCell>
+        </TableRow>
+      );
+    }
+
+    return filteredChannels.map((channel) => (
+      <TableRow key={channel.id}>
+        <TableCell>{channel.name}</TableCell>
+        <TableCell>{channel.description || '-'}</TableCell>
+        <TableCell>{channel.authorized_users?.length || 0}</TableCell>
+        <TableCell>
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={() => handleClickOpen(channel)}
+            sx={{ mr: 1 }}
+          >
+            ویرایش
+          </Button>
+          <Button
+            variant="outlined"
+            color="error"
+            size="small"
+            onClick={() => handleDelete(channel.id)}
+          >
+            حذف
+          </Button>
+        </TableCell>
+      </TableRow>
+    ));
+  };
 
   return (
     <Box sx={{ fontFamily: 'IRANSans, Vazirmatn, Roboto, Arial', fontSize: 15 }}>
@@ -312,25 +371,15 @@ function ChannelManagement() {
         <TableContainer>
           <Table size="small">
             <TableHead>
-              <TableRow sx={{ fontSize: 15 }}>
-                <TableCell align="right" sx={{ fontSize: 15 }}>نام کانال</TableCell>
-                <TableCell align="center" sx={{ fontSize: 15 }}>اقدامات</TableCell>
+              <TableRow>
+                <TableCell align="right">نام کانال</TableCell>
+                <TableCell align="right">توضیح</TableCell>
+                <TableCell align="right">تعداد کاربران مجاز</TableCell>
+                <TableCell align="center">اقدامات</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {filteredChannels.map((channel) => (
-                <TableRow sx={{ fontSize: 15 }} key={channel.id} hover>
-                  <TableCell align="right" sx={{ fontSize: 15 }}>{channel.name}</TableCell>
-                  <TableCell align="center" sx={{ fontSize: 15 }}>
-                    <IconButton color="primary" size="small" onClick={() => handleClickOpen(channel)}>
-                      <EditIcon />
-                    </IconButton>
-                    <IconButton color="error" size="small" onClick={() => handleDelete(channel.id)}>
-                      <DeleteIcon />
-                    </IconButton>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {renderChannels()}
             </TableBody>
           </Table>
         </TableContainer>

@@ -28,62 +28,92 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
-# CORS configuration to allow requests from React dev server
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://localhost:3010',
-    'http://localhost',
-]
-
-# Allow all origins in development
-CORS_ALLOW_ALL_ORIGINS = False
-# Allow cookies (credentials) from API calls
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^http://localhost:3000$", 
-    r"^http://localhost:3010$",
-    r"^http://localhost$"
-]
-
-# اضافه کردن تنظیمات CORS_URLS_REGEX برای محدود کردن CORS به مسیرهای معین
-CORS_URLS_REGEX = r'^/(api|backend)/.*$'
-
-# تنظیم هدرها برای اطمینان از عملکرد درست CORS
-CORS_EXPOSE_HEADERS = ['Content-Type', 'X-CSRFToken']
-CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
-]
-
-CORS_ALLOW_METHODS = [
-    'DELETE',
-    'GET',
-    'OPTIONS',
-    'PATCH',
-    'POST',
-    'PUT',
-]
+# CORS configuration - غیر فعال شده چون توسط nginx مدیریت می‌شود
+# CORS_ALLOWED_ORIGINS = []
+# CORS_ALLOW_ALL_ORIGINS = False
+# CORS_ALLOW_CREDENTIALS = False
+# CORS_ALLOWED_ORIGIN_REGEXES = []
+# CORS_URLS_REGEX = r'^/(api|backend)/.*$'
+# CORS_EXPOSE_HEADERS = []
+# CORS_ALLOW_HEADERS = []
+# CORS_ALLOW_METHODS = []
 
 # Configure CSRF and session cookies to work with cross-site React app
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://localhost:3010', 'http://localhost']
-# Configure session and CSRF cookies to work with cross-site React app
-SESSION_COOKIE_SAMESITE = 'Lax'
+
+# تنظیمات سشن و CSRF برای محیط توسعه
+SESSION_COOKIE_SAMESITE = 'Lax'  # بازگشت به Lax برای محیط توسعه
 SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_PATH = '/'
+SESSION_COOKIE_DOMAIN = None
+SESSION_COOKIE_NAME = 'sessionid'
+SESSION_SAVE_EVERY_REQUEST = True  # ذخیره سشن در هر درخواست
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+SESSION_COOKIE_AGE = 1209600  # دو هفته
+
+CSRF_COOKIE_SAMESITE = 'Lax'  # بازگشت به Lax برای محیط توسعه
 CSRF_COOKIE_SECURE = False
+CSRF_COOKIE_HTTPONLY = False  # امکان دسترسی از جاوااسکریپت
+CSRF_COOKIE_PATH = '/'
+CSRF_COOKIE_DOMAIN = None
+CSRF_USE_SESSIONS = False
+CSRF_COOKIE_NAME = 'csrftoken'
+CSRF_HEADER_NAME = 'HTTP_X_CSRFTOKEN'
+CSRF_FAILURE_VIEW = 'django.views.csrf.csrf_failure'
+
+# امکان درخواست به ادمین بدون CSRF
+CSRF_EXEMPT_PATHS = ['/admin/login/', '/api/auth/login/']
+
+# بهبود پیکربندی لاگینگ
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'admin_panel': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'DEBUG',
+    },
+}
+
+# تنظیمات احراز هویت
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+# مسیر لاگین
+LOGIN_URL = '/admin/login/'
+LOGIN_REDIRECT_URL = '/admin/'
 
 # Application definition
 
 INSTALLED_APPS = [
     "django.contrib.admin",
-    "corsheaders",
+    # "corsheaders",  # حذف شده چون CORS توسط nginx مدیریت می‌شود
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -95,13 +125,15 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "corsheaders.middleware.CorsMiddleware",
+    # "corsheaders.middleware.CorsMiddleware",  # حذف شده چون CORS توسط nginx مدیریت می‌شود
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "admin_panel.middleware.CustomCsrfMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "admin_panel.middleware.SessionDebugMiddleware",
 ]
 
 ROOT_URLCONF = "admin_panel.urls"
@@ -182,12 +214,16 @@ USE_TZ = True
 
 STATIC_ROOT = '/app/static/'
 
-FORCE_SCRIPT_NAME = '/backend'
+# تغییر تنظیمات برای عملکرد درست با nginx
 USE_X_FORWARDED_HOST = True
-STATIC_URL = '/backend/static/'
-MEDIA_URL = '/backend/media/'
+USE_X_FORWARDED_PORT = True
 
-STATIC_URL = "static/"
+# آیا از FORCE_SCRIPT_NAME استفاده می‌کنیم یا نه
+# جنگو از هدر X-Script-Name استفاده می‌کند اگر تنظیم شده باشد
+FORCE_SCRIPT_NAME = None
+
+STATIC_URL = "/static/"
+MEDIA_URL = "/media/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field

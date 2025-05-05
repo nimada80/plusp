@@ -8,26 +8,32 @@ class ConsoleConfig(AppConfig):
 
     def ready(self):
         """تنظیم ترتیب مدل‌ها در پنل ادمین"""
+        # اجرا فقط در سرور اصلی (نه در کامندهای مدیریتی)
+        import sys
+        if 'runserver' not in sys.argv and 'gunicorn' not in sys.argv[0]:
+            return
+            
+        # از استفاده از unregister که باعث خطا می‌شود، خودداری می‌کنیم
+        # به جای آن، روش دیگری برای تغییر نام‌ها و ترتیب مدل‌ها استفاده می‌کنیم
+        
+        # تنظیمات نام و ترتیب مدل‌ها
         from django.contrib import admin
-        from . import models
-        
-        # تنظیم ترتیب نمایش مدل‌ها
-        models_order = [
-            models.SuperAdmin,
-            models.User,
-            models.Channel,
-        ]
-        
-        # یک دیکشنری برای ذخیره مدل‌های ثبت شده
-        registered_models = {}
-        
-        # ذخیره تمام مدل‌های ثبت شده
-        for model, model_admin in admin.site._registry.items():
-            if model._meta.app_label == self.name:
-                registered_models[model] = model_admin
-                admin.site.unregister(model)
-        
-        # ثبت مجدد مدل‌ها با ترتیب جدید
-        for model in models_order:
-            if model in registered_models:
-                admin.site.register(model, registered_models[model].__class__)
+        from django.contrib.admin.sites import AlreadyRegistered
+
+        # تنظیم verbose_name برای مدل‌ها که روی ترتیب نمایش و نام فیلدها تأثیر می‌گذارد
+        from django.apps import apps
+        try:
+            app_config = apps.get_app_config('console')
+            if hasattr(app_config, 'models_module'):
+                # تنظیم متای مدل‌ها
+                if hasattr(app_config.models_module, 'SuperAdmin'):
+                    app_config.models_module.SuperAdmin._meta.verbose_name = "Super Admin"
+                    app_config.models_module.SuperAdmin._meta.verbose_name_plural = "Super Admins"
+                if hasattr(app_config.models_module, 'User'):
+                    app_config.models_module.User._meta.verbose_name = "User"
+                    app_config.models_module.User._meta.verbose_name_plural = "Users"
+                if hasattr(app_config.models_module, 'Channel'):
+                    app_config.models_module.Channel._meta.verbose_name = "Channel"
+                    app_config.models_module.Channel._meta.verbose_name_plural = "Channels"
+        except Exception as e:
+            print(f"Error setting verbose names: {e}")

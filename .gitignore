@@ -9,7 +9,7 @@ db.sqlite3-journal
 media
 *.so
 .Python
-env/
+#env/
 build/
 develop-eggs/
 dist/
@@ -42,8 +42,8 @@ build/
 .env.production.local
 
 # Docker
-.env
-docker-compose.override.yml
+#.env
+#docker-compose.override.yml
 
 # Supabase
 supabase/.branches/

@@ -1,8 +1,25 @@
-Django>=5.2
-python-dotenv>=1.1.0
-djangorestframework>=3.16.0
-psycopg2-binary>=2.9.10
-supabase>=2.15.1
-django-cors-headers>=4.7.0
-gunicorn>=23.0.0
-livekit>=1.0.6
+# فریم‌ورک‌های اصلی
+Django==5.2
+djangorestframework==3.16.0
+django-cors-headers==4.7.0
+gunicorn==23.0.0
+
+# پایگاه داده و ابزارهای مرتبط
+psycopg2-binary==2.9.10
+
+# سرویس‌های خارجی و API
+supabase==2.15.1
+livekit==1.0.6
+requests==2.31.0
+
+# مدیریت محیط و تنظیمات
+python-dotenv==1.1.0
+
+# امنیت
+cryptography>=41.0.5
+PyJWT>=2.8.0
+
+# ابزارهای کمکی
+pytz>=2023.3
+Pillow>=10.0.0
+six>=1.16.0

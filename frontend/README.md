@@ -1,70 +1,111 @@
-# Getting Started with Create React App
+# پنل مدیریت پلاس پی‌تی‌تی
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+این پروژه بخش فرانت‌اند پنل مدیریت پلاس پی‌تی‌تی است که با استفاده از React و Material UI ساخته شده است.
 
-## Available Scripts
+## نیازمندی‌ها
 
-In the project directory, you can run:
+برای اجرای این پروژه به موارد زیر نیاز دارید:
 
-### `npm start`
+```
+Node.js >= 18.x
+npm >= 9.x
+```
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## وابستگی‌های اصلی
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+```
+# کتابخانه‌های اصلی
+react: 18.2.0
+react-dom: 18.2.0
+react-router-dom: 6.22.1
+react-scripts: 5.0.1
 
-### `npm test`
+# رابط کاربری
+@mui/material: 7.0.2
+@mui/icons-material: 7.0.2
+@emotion/react: 11.14.0
+@emotion/styled: 11.14.0
+@emotion/cache: 11.14.0
+stylis: 4.3.6
+stylis-plugin-rtl: 2.1.1
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+# ارتباط با API
+axios: 1.8.4
+@supabase/supabase-js: 2.49.4
 
-### `npm run build`
+# تست
+@testing-library/react: 16.3.0
+@testing-library/jest-dom: 6.6.3
+@testing-library/user-event: 13.5.0
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## نصب و راه‌اندازی
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+برای نصب وابستگی‌ها و اجرای پروژه در محیط توسعه:
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+```bash
+# نصب وابستگی‌ها
+npm install
 
-### `npm run eject`
+# اجرای برنامه در محیط توسعه
+npm start
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+برای ساخت نسخه تولیدی:
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+```bash
+npm run build
+```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## ساختار پروژه
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+```
+frontend/
+├── src/                    # کدهای اصلی پروژه
+│   ├── components/         # کامپوننت‌های React
+│   │   ├── ChannelManagement.js  # مدیریت کانال‌ها
+│   │   ├── UserManagement.js     # مدیریت کاربران
+│   │   ├── Login.js              # صفحه ورود
+│   │   └── Sidebar.js            # نوار کناری
+│   ├── utils/              # ابزارهای کمکی
+│   │   └── api.js          # توابع ارتباط با API
+│   ├── App.js              # کامپوننت اصلی
+│   ├── theme.js            # تنظیمات تم Material UI
+│   ├── index.js            # نقطه ورود برنامه
+│   └── RequireAuth.js      # محافظت از مسیرها
+├── public/                 # فایل‌های استاتیک
+├── Dockerfile              # پیکربندی Docker
+└── package.json            # تنظیمات پروژه و وابستگی‌ها
+```
 
-## Learn More
+## ویژگی‌ها
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+- مدیریت کانال‌ها (افزودن، ویرایش، حذف)
+- مدیریت کاربران (افزودن، ویرایش، حذف، تغییر وضعیت)
+- تخصیص کاربران به کانال‌ها
+- رابط کاربری راست به چپ (RTL) برای زبان فارسی
+- احراز هویت و کنترل دسترسی
+- ارتباط با API بک‌اند
+- پشتیبانی از Supabase
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+## اجرا با داکر
 
-### Code Splitting
+برای اجرا با استفاده از Docker:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```bash
+# ساخت ایمیج
+docker build -t plusptt-frontend .
 
-### Analyzing the Bundle Size
+# اجرا
+docker run -p 3010:80 plusptt-frontend
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+## راهنمای Docker Compose
 
-### Making a Progressive Web App
+برای اجرای کل پروژه با استفاده از Docker Compose:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+```bash
+# در ریشه پروژه اصلی
+cd ../
+docker-compose -f docker/docker-compose.yml up
+```

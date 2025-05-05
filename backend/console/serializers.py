@@ -23,7 +23,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'password', 'role', 'active', 'created_at', 'channels']
         # password should be write-only to avoid returning it in responses
-        extra_kwargs = {'password': {'write_only': True}}
+        extra_kwargs = {'password': {'write_only': True, 'required': False}}
 
     def create(self, validated_data):
         """Create a new user with validated data"""
@@ -33,6 +33,11 @@ class UserSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """Update a user with validated data"""
         print(f"UPDATE - IN SERIALIZER: {validated_data.get('password', 'No password')[:20]}...")  # Debug
+        
+        # حذف فیلد password از validated_data اگر مقدار آن خالی یا undefined است
+        if 'password' in validated_data and (validated_data['password'] is None or validated_data['password'] == '' or validated_data['password'] == 'undefined'):
+            validated_data.pop('password')
+        
         return super().update(instance, validated_data)
 
 class ChannelSerializer(serializers.ModelSerializer):

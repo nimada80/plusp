@@ -7,136 +7,634 @@ login_view and logout_view handle session login/logout without CSRF enforcement.
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from django.utils.decorators import method_decorator
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from .models import Channel, User, SuperAdmin
-from .serializers import ChannelSerializer, UserSerializer, SuperAdminSerializer
-from django.contrib.auth.hashers import make_password
-import random
-from rest_framework import viewsets, status
+from .models import Channel, SuperAdmin
+from .serializers import ChannelSerializer, SuperAdminSerializer
+from django.contrib.auth.hashers import check_password
+from django.contrib.auth.models import User as DjangoUser
 from django.contrib.auth import authenticate, login, logout
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.authentication import SessionAuthentication
 from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth.hashers import check_password
-from django.contrib.auth.models import User as DjangoUser
+import random
+import traceback
+import requests
+import os
+import uuid
+from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+from .supabase_client import create_user, get_user_by_email, update_user, delete_user, create_channel
+
+def _make_request(method: str, path: str, data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    ارسال درخواست به Supabase API
+    """
+    try:
+        base_url = "http://kong:8000"
+        url = f"{base_url}{path}"
+        service_role_key = os.getenv('SERVICE_ROLE_KEY')
+        if not service_role_key:
+            logger.error("متغیر محیطی SERVICE_ROLE_KEY تنظیم نشده است")
+            return None
+            
+        headers = {
+            'apikey': service_role_key,
+            'Authorization': f"Bearer {service_role_key}",
+            'Content-Type': 'application/json'
+        }
+
+        logger.info(f"ارسال درخواست {method} به {url}")
+        logger.info(f"هدرها: {headers}")
+        if data:
+            logger.info(f"داده‌های ارسالی: {data}")
+
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            json=data
+        )
+
+        logger.info(f"کد وضعیت: {response.status_code}")
+        logger.info(f"پاسخ دریافتی: {response.text}")
+
+        if response.status_code >= 400:
+            logger.error(f"خطا در درخواست به Supabase: {response.status_code} - {response.text}")
+            return None
+
+        # اگر درخواست موفق بود و پاسخ خالی است، True برگردان
+        if response.status_code in [200, 201, 204] and not response.text.strip():
+            return True
+
+        try:
+            json_response = response.json()
+            # اگر پاسخ یک لیست خالی باشد، True برگردان
+            if isinstance(json_response, list) and not json_response:
+                return True
+            return json_response
+        except ValueError:
+            # اگر پاسخ JSON نباشد، True برگردان
+            return True
+    except Exception as e:
+        logger.error(f"خطا در ارسال درخواست به Supabase: {e}")
+        logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+        return None
 
 class ChannelViewSet(viewsets.ModelViewSet):
-    # ChannelViewSet: provides list, create, retrieve, update, destroy for Channel model
-    # Requires authenticated user via Django session (SessionAuthentication)
-    # Only logged-in users (IsAuthenticated) can access these endpoints
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]
-    queryset = Channel.objects.using('supabase').all()
+    queryset = Channel.objects.using('supabase').none()  # تغییر به none() برای جلوگیری از دسترسی مستقیم
     serializer_class = ChannelSerializer
 
-    def create(self, request, *args, **kwargs):
-        # Override create to generate a unique random channel_id before saving
-        # تولید channel_id غیرتکراری
-        while True:
-            rand_id = random.randint(1000000, 9999999)
-            if not Channel.objects.using('supabase').filter(channel_id=rand_id).exists():
-                break
-        request.data['channel_id'] = rand_id
-        return super().create(request, *args, **kwargs)
+    def list(self, request):
+        """
+        دریافت لیست کانال‌ها از Supabase REST API به جای دسترسی مستقیم به دیتابیس
+        """
+        try:
+            # استفاده از _make_request برای دریافت کانال‌ها از Supabase REST API
+            response = _make_request('GET', '/rest/v1/channels', None)
+            logger.info(f"دریافت کانال‌ها از Supabase REST API: {response}")
+            
+            # اگر پاسخ وجود ندارد یا خطا دارد، آرایه خالی برگردان
+            if not response:
+                logger.warning("پاسخی از Supabase REST API دریافت نشد")
+                return Response([], status=status.HTTP_200_OK)
+                
+            # برگرداندن پاسخ API به عنوان نتیجه
+            return Response(response, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"خطا در دریافت کانال‌ها از Supabase: {e}")
+            return Response(
+                {"detail": "Error fetching channels from Supabase API"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-class UserViewSet(viewsets.ModelViewSet):
-    # UserViewSet: provides CRUD for console.User model
-    # Ensures password is hashed on create/update and access requires authentication
+    def create(self, request, *args, **kwargs):
+        """
+        ایجاد کانال جدید با استفاده از Supabase REST API
+        """
+        try:
+            # تولید یک شناسه تصادفی برای کانال
+            while True:
+                rand_id = random.randint(1000000, 9999999)
+                # بررسی تکراری بودن شناسه
+                existing = _make_request('GET', f"/rest/v1/channels?channel_id=eq.{rand_id}")
+                if not existing or len(existing) == 0:
+                    break
+                    
+            # آماده‌سازی داده‌ها برای ارسال به API
+            data = request.data.copy()
+            data['channel_id'] = rand_id
+            
+            # ارسال درخواست به Supabase REST API
+            response = _make_request('POST', '/rest/v1/channels', data)
+            
+            if not response:
+                return Response(
+                    {"detail": "Failed to create channel in Supabase"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+            return Response(response, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f"خطا در ایجاد کانال در Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def retrieve(self, request, pk=None):
+        """
+        دریافت اطلاعات یک کانال خاص با استفاده از Supabase REST API
+        """
+        try:
+            response = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
+            
+            if not response or len(response) == 0:
+                return Response(
+                    {"detail": "Channel not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            return Response(response[0], status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"خطا در دریافت کانال از Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def update(self, request, pk=None, *args, **kwargs):
+        """
+        بروزرسانی یک کانال با استفاده از Supabase REST API
+        """
+        try:
+            data = request.data.copy()
+            
+            # برای اطمینان از اینکه channel_id تغییر نمی‌کند
+            if 'channel_id' in data:
+                del data['channel_id']
+                
+            response = _make_request('PATCH', f"/rest/v1/channels?id=eq.{pk}", data)
+            
+            if not response:
+                return Response(
+                    {"detail": "Failed to update channel in Supabase"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+            # دریافت داده‌های بروز شده
+            updated_channel = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
+            
+            if not updated_channel or len(updated_channel) == 0:
+                return Response(
+                    {"detail": "Channel updated but could not retrieve updated data"},
+                    status=status.HTTP_200_OK
+                )
+                
+            return Response(updated_channel[0], status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"خطا در بروزرسانی کانال در Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def destroy(self, request, pk=None):
+        """
+        حذف یک کانال با استفاده از Supabase REST API
+        """
+        try:
+            response = _make_request('DELETE', f"/rest/v1/channels?id=eq.{pk}")
+            
+            if not response:
+                return Response(
+                    {"detail": "Failed to delete channel from Supabase"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Exception as e:
+            logger.error(f"خطا در حذف کانال از Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+@method_decorator(csrf_exempt, name='dispatch')
+class UserViewSet(viewsets.ViewSet):
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]
-    queryset = User.objects.using('supabase').all()
-    serializer_class = UserSerializer
 
     def create(self, request, *args, **kwargs):
-        # Handle user creation: validate input, check duplicates, hash password, then save
-        data = request.data.copy()
-        
-        # بررسی داده‌های ورودی
-        if not data.get('username') or not data.get('password') or not data.get('role'):
-            return Response({'error': 'اطلاعات ناقص است.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # بررسی تکراری نبودن نام کاربری
-        if User.objects.using('supabase').filter(username=data['username']).exists():
-            return Response({'error': 'این نام کاربری قبلا ثبت شده است.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # هش کردن رمز عبور و استفاده از فیلد 'password'
-        if 'password' in data:
-            print(f"BEFORE HASHING: {data['password'][:3]}...")  # Debug - only show first few chars
-            data['password'] = make_password(data['password'])
-            print(f"AFTER HASHING: {data['password'][:20]}...")  # Debug
-        
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        
-        # افزایش شمارنده تعداد کاربران در SuperAdmin
-        try:
-            super_admin = SuperAdmin.objects.using('supabase').first()
-            if super_admin:
-                super_admin.user_count += 1
-                super_admin.save(using='supabase')
-        except Exception as e:
-            print(f"Error updating user count: {e}")
-            
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        username = request.data.get('username')
+        password = request.data.get('password')
+        role = request.data.get('role', 'regular')
+        active = request.data.get('active', True)
+        channels = request.data.get('channels', [])
 
-    def update(self, request, *args, **kwargs):
-        # Handle user update: if password provided, hash it before updating record
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        data = request.data.copy()
-        
-        # اگر رمز عبور در داده‌های ورودی باشد، آن را هش می‌کنیم
-        if 'password' in data:
-            print(f"UPDATE - BEFORE HASHING: {data['password'][:3]}...")  # Debug
-            data['password'] = make_password(data['password'])
-            print(f"UPDATE - AFTER HASHING: {data['password'][:20]}...")  # Debug
-        
-        serializer = self.get_serializer(instance, data=data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        return Response(serializer.data)
-    
-    def destroy(self, request, *args, **kwargs):
-        # کاهش شمارنده تعداد کاربران در SuperAdmin
+        logger.info(f"دریافت درخواست ثبت کاربر جدید: username={username}, role={role}, active={active}, channels={channels}")
+
+        if not username or not password:
+            logger.error("نام کاربری یا رمز عبور وارد نشده است")
+            response = Response({'error': 'username و password الزامی هستند.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
         try:
-            super_admin = SuperAdmin.objects.using('supabase').first()
-            if super_admin and super_admin.user_count > 0:
-                super_admin.user_count -= 1
-                super_admin.save(using='supabase')
-        except Exception as e:
-            print(f"Error updating user count: {e}")
+            # تبدیل نام کاربری به فرمت ایمیل برای Auth
+            email = f"{username}@example.com"
+
+            # ثبت کاربر در Supabase Auth
+            logger.info("شروع ثبت کاربر در Supabase Auth")
+            auth_data = {
+                "email": email,
+                "password": password,
+                "email_confirm": True,
+                "user_metadata": {
+                    "role": role,
+                    "active": active,
+                    "channels": channels
+                }
+            }
+
+            logger.info(f"داده‌های ارسالی به Auth: {auth_data}")
+            auth_response = _make_request(
+                "POST",
+                "/auth/v1/admin/users",
+                auth_data
+            )
+
+            if not auth_response:
+                logger.error("ثبت نام در Supabase Auth موفق نبود")
+                response = Response({'error': 'ثبت نام در Supabase Auth موفق نبود.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            # دریافت uid از پاسخ Auth
+            auth_user_id = auth_response.get('id')
+            if not auth_user_id:
+                logger.error("شناسه کاربر در پاسخ Auth یافت نشد")
+                response = Response({'error': 'شناسه کاربر در پاسخ Auth یافت نشد.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            logger.info(f"کاربر با موفقیت در Auth ثبت شد. شناسه کاربر: {auth_user_id}")
+
+            # تبدیل شناسه Auth به UUID
+            try:
+                user_id = uuid.UUID(auth_user_id)
+            except ValueError:
+                logger.error(f"شناسه کاربر {auth_user_id} معتبر نیست")
+                # حذف کاربر از Auth
+                logger.info("حذف کاربر از Auth به دلیل شناسه نامعتبر")
+                _make_request(
+                    "DELETE",
+                    f"/auth/v1/admin/users/{auth_user_id}"
+                )
+                response = Response({'error': 'شناسه کاربر معتبر نیست.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            # ذخیره اطلاعات در جدول users (بدون @example.com و بدون رمز عبور)
+            user_data = {
+                'id': str(user_id),
+                'username': username,  # بدون @example.com
+                'role': role,
+                'active': active,
+                'channels': channels
+            }
+
+            logger.info(f"داده‌های ارسالی به جدول users: {user_data}")
+
+            # درج در جدول users
+            db_response = _make_request(
+                "POST",
+                "/rest/v1/users",
+                user_data
+            )
+
+            if not db_response:
+                logger.error("خطا در ذخیره اطلاعات کاربر در دیتابیس")
+                # حذف کاربر از Auth
+                logger.info("حذف کاربر از Auth به دلیل خطا در دیتابیس")
+                _make_request(
+                    "DELETE",
+                    f"/auth/v1/admin/users/{auth_user_id}"
+                )
+                response = Response({'error': 'خطا در ذخیره اطلاعات کاربر در دیتابیس.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            logger.info(f"کاربر با موفقیت در جدول users ذخیره شد: {db_response}")
+
+            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
+            response_data = {
+                    'success': True,
+                'message': 'کاربر جدید با موفقیت ثبت شد.',
+                    'user': {
+                    'id': str(user_id),
+                    'username': username,  # بدون @example.com
+                        'role': role,
+                        'active': active,
+                    'channels': channels
+                    }
+            }
             
-        return super().destroy(request, *args, **kwargs)
+            response = Response(response_data, status=status.HTTP_201_CREATED)
+
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            
+            return response
+
+        except Exception as e:
+            logger.error(f"خطا در ثبت کاربر: {str(e)}")
+            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+            # اگر کاربر در Auth ثبت شده بود، آن را حذف کن
+            if 'auth_user_id' in locals():
+                logger.info(f"حذف کاربر {auth_user_id} از Auth به دلیل خطا")
+                _make_request(
+                    "DELETE",
+                    f"/auth/v1/admin/users/{auth_user_id}"
+                )
+            response = Response({'error': 'خطا در ثبت کاربر', 'details': str(e)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
+    def list(self, request, *args, **kwargs):
+        try:
+            # دریافت لیست کاربران از دیتابیس
+            logger.info("دریافت لیست کاربران از دیتابیس")
+            db_response = _make_request(
+                "GET",
+                "/rest/v1/users?select=*"
+            )
+
+            if not db_response:
+                logger.error("خطا در دریافت لیست کاربران از دیتابیس")
+                response = Response({'error': 'خطا در دریافت لیست کاربران از دیتابیس.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            logger.info(f"لیست کاربران با موفقیت دریافت شد: {db_response}")
+
+            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
+            response = Response(db_response, status=status.HTTP_200_OK)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
+        except Exception as e:
+            logger.error(f"خطا در دریافت لیست کاربران: {str(e)}")
+            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+            response = Response({'error': 'خطا در دریافت لیست کاربران', 'details': str(e)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
+    def update(self, request, pk=None, *args, **kwargs):
+        try:
+            # دریافت اطلاعات کاربر فعلی
+            logger.info(f"دریافت اطلاعات کاربر با شناسه {pk}")
+            current_user = _make_request(
+                "GET",
+                f"/rest/v1/users?id=eq.{pk}&select=*"
+            )
+
+            if not current_user:
+                logger.error(f"کاربر با شناسه {pk} یافت نشد")
+                response = Response({'error': 'کاربر مورد نظر یافت نشد.'},
+                                status=status.HTTP_404_NOT_FOUND)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            current_user = current_user[0]
+            logger.info(f"اطلاعات کاربر فعلی: {current_user}")
+
+            # آماده‌سازی داده‌های جدید
+            new_username = request.data.get('username')
+            new_password = request.data.get('password')
+            new_role = request.data.get('role', current_user.get('role'))
+            new_active = request.data.get('active', current_user.get('active'))
+            new_channels = request.data.get('channels', current_user.get('channels', []))
+
+            # تبدیل نام کاربری به فرمت ایمیل برای Auth
+            email = f"{new_username}@example.com" if new_username else current_user.get('username')
+            # حذف @example.com اگر قبلاً وجود دارد
+            if email.endswith('@example.com@example.com'):
+                email = email.replace('@example.com@example.com', '@example.com')
+
+            # به‌روزرسانی در Auth
+            auth_data = {
+                "email": email,
+                "user_metadata": {
+                    "role": new_role,
+                    "active": new_active,
+                    "channels": new_channels
+                }
+            }
+
+            # اگر رمز عبور تغییر کرده، آن را فقط در Auth به‌روزرسانی کن
+            if new_password:
+                auth_data["password"] = new_password
+
+            logger.info(f"به‌روزرسانی کاربر در Auth: {auth_data}")
+            auth_response = _make_request(
+                "PUT",
+                f"/auth/v1/admin/users/{pk}",
+                auth_data
+            )
+
+            if not auth_response:
+                logger.error("خطا در به‌روزرسانی کاربر در Auth")
+                response = Response({'error': 'خطا در به‌روزرسانی کاربر در Auth.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            logger.info(f"کاربر با موفقیت در Auth به‌روزرسانی شد: {auth_response}")
+
+            # به‌روزرسانی در دیتابیس (بدون رمز عبور)
+            db_data = {
+                "username": new_username,  # ذخیره نام کاربری بدون @example.com
+                "role": new_role,
+                "active": new_active,
+                "channels": new_channels
+            }
+
+            logger.info(f"به‌روزرسانی کاربر در دیتابیس: {db_data}")
+            db_response = _make_request(
+                "PATCH",
+                f"/rest/v1/users?id=eq.{pk}",
+                db_data
+            )
+
+            if not db_response:
+                logger.error("خطا در به‌روزرسانی کاربر در دیتابیس")
+                # حذف تغییرات از Auth
+                logger.info("حذف تغییرات از Auth به دلیل خطا در دیتابیس")
+                _make_request(
+                    "PUT",
+                    f"/auth/v1/admin/users/{pk}",
+                    {
+                        "email": current_user.get('username'),
+                        "user_metadata": {
+                            "role": current_user.get('role'),
+                            "active": current_user.get('active'),
+                            "channels": current_user.get('channels', [])
+                        }
+                    }
+                )
+                response = Response({'error': 'خطا در به‌روزرسانی کاربر در دیتابیس.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            logger.info(f"کاربر با موفقیت در دیتابیس به‌روزرسانی شد: {db_response}")
+
+            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
+            response_data = {
+                'success': True,
+                'message': 'اطلاعات کاربر با موفقیت به‌روزرسانی شد.',
+                'user': {
+                    'id': pk,
+                    'username': new_username,  # برگرداندن نام کاربری بدون @example.com
+                    'role': new_role,
+                    'active': new_active,
+                    'channels': new_channels
+                }
+            }
+            
+            response = Response(response_data, status=status.HTTP_200_OK)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
+        except Exception as e:
+            logger.error(f"خطا در به‌روزرسانی کاربر: {str(e)}")
+            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+            response = Response({'error': 'خطا در به‌روزرسانی کاربر', 'details': str(e)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
+    def destroy(self, request, pk=None, *args, **kwargs):
+        try:
+            # حذف کاربر از دیتابیس
+            logger.info(f"حذف کاربر با شناسه {pk} از دیتابیس")
+            db_response = _make_request(
+                "DELETE",
+                f"/rest/v1/users?id=eq.{pk}"
+            )
+
+            if not db_response:
+                logger.error(f"خطا در حذف کاربر {pk} از دیتابیس")
+                response = Response({'error': 'خطا در حذف کاربر از دیتابیس.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            # حذف کاربر از Auth
+            logger.info(f"حذف کاربر با شناسه {pk} از Auth")
+            auth_response = _make_request(
+                "DELETE",
+                f"/auth/v1/admin/users/{pk}"
+            )
+
+            # پاسخ خالی از Auth به معنی موفقیت‌آمیز بودن عملیات است
+            if auth_response is None:
+                logger.error(f"خطا در حذف کاربر {pk} از Auth")
+                response = Response({'error': 'خطا در حذف کاربر از Auth.'},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                if 'HTTP_ORIGIN' in request.META:
+                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                    response['Access-Control-Allow-Credentials'] = 'true'
+                return response
+
+            logger.info(f"کاربر با شناسه {pk} با موفقیت حذف شد")
+
+            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
+            response_data = {
+                'success': True,
+                'message': 'کاربر با موفقیت حذف شد.'
+            }
+            
+            response = Response(response_data, status=status.HTTP_200_OK)
+            
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            
+            return response
+
+        except Exception as e:
+            logger.error(f"خطا در حذف کاربر: {str(e)}")
+            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+            response = Response({'error': 'خطا در حذف کاربر', 'details': str(e)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if 'HTTP_ORIGIN' in request.META:
+                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+                response['Access-Control-Allow-Credentials'] = 'true'
+            return response
 
 class SuperAdminViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for SuperAdmin model.
-    Provides CRUD operations for super admin credentials and user limits.
-    Only accessible to authenticated users with proper permissions.
-    """
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]
     queryset = SuperAdmin.objects.using('supabase').all()
     serializer_class = SuperAdminSerializer
-    
+
     def create(self, request, *args, **kwargs):
-        # Handle super admin creation with validation
         data = request.data.copy()
-        
-        # بررسی داده‌های ورودی
         if not data.get('admin_super_user') or not data.get('admin_super_password') or not data.get('user_limit'):
             return Response({'error': 'اطلاعات ناقص است.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # بررسی تکراری نبودن نام کاربری سوپر ادمین
+
         if SuperAdmin.objects.using('supabase').filter(admin_super_user=data['admin_super_user']).exists():
             return Response({'error': 'این نام کاربری سوپر ادمین قبلا ثبت شده است.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # اضافه کردن نام کاربر ایجاد کننده
+
         data['created_by'] = request.user.username
-        
+
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -148,8 +646,6 @@ class SuperAdminViewSet(viewsets.ModelViewSet):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def login_view(request):
-    """Authenticate credentials against SuperAdmin and start a session. Returns success flag."""
-    # Handle OPTIONS request for CORS preflight
     if request.method == 'OPTIONS':
         response = Response()
         response['Access-Control-Allow-Origin'] = request.META.get('HTTP_ORIGIN', '*')
@@ -158,34 +654,26 @@ def login_view(request):
         response['Access-Control-Allow-Credentials'] = 'true'
         response['Content-Length'] = '0'
         return response
-    
-    # Handle regular login
+
     username = request.data.get('username')
     password = request.data.get('password')
-    
-    # معتبرسازی از مدل SuperAdmin با بانک اطلاعاتی supabase
+
     try:
-        # جستجوی نام کاربری در جدول SuperAdmin
         admin_obj = SuperAdmin.objects.using('supabase').get(admin_super_user=username)
         if check_password(password, admin_obj.admin_super_password):
-            # اگر احراز هویت موفق بود، کاربر Django را پیدا یا ایجاد کنیم
             django_user, created = DjangoUser.objects.get_or_create(username=username)
             if created:
                 django_user.set_password(password)
                 django_user.save()
-            
-            # لاگین با کاربر Django
             login(request, django_user)
             response = Response({'success': True})
-            
-            # Add CORS headers explicitly to the response
             if 'HTTP_ORIGIN' in request.META:
                 response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
                 response['Access-Control-Allow-Credentials'] = 'true'
             return response
     except SuperAdmin.DoesNotExist:
-        pass  # سوپر ادمین پیدا نشد، خطا برگردانده می‌شود
-    
+        pass
+
     return Response({'error': 'نام کاربری یا رمز عبور سوپر ادمین اشتباه است.'}, status=status.HTTP_400_BAD_REQUEST)
 
 @csrf_exempt
@@ -193,8 +681,6 @@ def login_view(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def logout_view(request):
-    """Terminate user session. Returns success flag."""
-    # Handle OPTIONS request for CORS preflight
     if request.method == 'OPTIONS':
         response = Response()
         response['Access-Control-Allow-Origin'] = request.META.get('HTTP_ORIGIN', '*')
@@ -203,10 +689,9 @@ def logout_view(request):
         response['Access-Control-Allow-Credentials'] = 'true'
         response['Content-Length'] = '0'
         return response
-        
+
     logout(request)
     response = Response({'success': True})
-    # Add CORS headers explicitly to the response
     if 'HTTP_ORIGIN' in request.META:
         response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
         response['Access-Control-Allow-Credentials'] = 'true'
@@ -217,8 +702,6 @@ def logout_view(request):
 @authentication_classes([SessionAuthentication])
 @permission_classes([IsAuthenticated])
 def user_view(request):
-    """Return current authenticated user info."""
-    # Handle OPTIONS request for CORS preflight
     if request.method == 'OPTIONS':
         response = Response()
         response['Access-Control-Allow-Origin'] = request.META.get('HTTP_ORIGIN', '*')
@@ -227,32 +710,29 @@ def user_view(request):
         response['Access-Control-Allow-Credentials'] = 'true'
         response['Content-Length'] = '0'
         return response
-    
-    # Django user model info
+
     django_user = request.user
-    
-    # Try to get SuperAdmin model corresponding to authenticated user
+
     try:
         super_admin = SuperAdmin.objects.using('supabase').get(admin_super_user=django_user.username)
         data = {
             'id': super_admin.id,
             'username': super_admin.admin_super_user,
-            'role': 'super_admin',  # نقش سوپر ادمین
+            'role': 'super_admin',
             'is_authenticated': True,
             'user_limit': super_admin.user_limit,
             'user_count': super_admin.user_count
         }
     except SuperAdmin.DoesNotExist:
-        # سوپر ادمین پیدا نشد، اطلاعات ساده ارسال می‌شود
         data = {
             'username': django_user.username,
             'is_authenticated': True,
             'role': 'unknown'
         }
-    
+
     response = Response(data)
-    # Add CORS headers explicitly to the response
     if 'HTTP_ORIGIN' in request.META:
         response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
         response['Access-Control-Allow-Credentials'] = 'true'
     return response
+

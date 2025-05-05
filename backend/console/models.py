@@ -8,6 +8,7 @@ Defines ORM models for the console app:
 """
 
 from django.db import models
+import uuid
 
 import random
 from django.db import models
@@ -61,32 +62,25 @@ class Channel(models.Model):
 class User(models.Model):
     """
     Custom user model stored in 'users' table:
-    - id: primary key
+    - id: UUID primary key
     - username: unique login name
-    - password: hashed credential
     - role: user role identifier
     - active: account status flag
     - created_at: timestamp of account creation
+    - channels: list of channel IDs
     """
-    # Maps to existing 'users' DB table
-    id = models.BigAutoField(primary_key=True)
-    # Unique username used for authentication
-    username = models.CharField(max_length=150, unique=True)
-    # Store hashed password
-    password = models.CharField(max_length=128)
-    # Role string (e.g., 'admin', 'regular')
-    role = models.CharField(max_length=20)
-    # Soft-delete or activation flag
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    username = models.CharField(max_length=255, unique=True)
+    role = models.CharField(max_length=50)
     active = models.BooleanField(default=True)
-    # Auto-generated creation timestamp
+    channels = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        # Explicit table name in database
         db_table = 'users'
+        managed = False
 
     def __str__(self):
-        # String representation returns username
         return self.username
 
 class SuperAdmin(models.Model):

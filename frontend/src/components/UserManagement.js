@@ -36,70 +36,7 @@ import {
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
-
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
-
-// Helper to read CSRF token from cookies
-function getCookie(name) {
-  let cookieValue = null;
-  if (document.cookie && document.cookie !== '') {
-    const cookies = document.cookie.split(';');
-    for (let cookie of cookies) {
-      cookie = cookie.trim();
-      if (cookie.startsWith(name + '=')) {
-        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-        break;
-      }
-    }
-  }
-  return cookieValue;
-}
-
-/**
- * apiFetch
- * Wraps fetch to include CSRF token and handle network/API errors.
- * @param {string} url - API endpoint path
- * @param {object} options - fetch options including method, headers, body
- * @returns {object|null} JSON response or null
- * @throws {Error} on HTTP or parsing error
- */
-const apiFetch = async (url, options = {}) => {
-  const defaultOptions = { headers: {}, credentials: 'include' };
-  const mergedOptions = { ...defaultOptions, ...options };
-  mergedOptions.headers = { ...defaultOptions.headers, ...options.headers };
-  // Only set JSON header for requests with body
-  if (mergedOptions.method && mergedOptions.method !== 'GET') {
-    mergedOptions.headers['Content-Type'] = 'application/json';
-  }
-  // Attach CSRF token header for non-GET
-  const csrftoken = getCookie('csrftoken');
-  if (csrftoken && mergedOptions.method && mergedOptions.method !== 'GET') {
-    mergedOptions.headers['X-CSRFToken'] = csrftoken;
-  }
-  // Debug log
-  console.log(`Calling API: ${API_BASE_URL}${url}`, mergedOptions);
-
-  try {
-    const response = await fetch(`${API_BASE_URL}${url}`, mergedOptions);
-    if (!response.ok) {
-      let errorData;
-      try {
-        errorData = await response.json();
-      } catch (e) {
-        errorData = { detail: `HTTP error! status: ${response.status}` };
-      }
-      console.error(`API Error (${response.status}) on ${url}:`, errorData);
-      throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
-    }
-    if (response.status === 204) {
-      return null;
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('Network or API fetch error:', error);
-    throw error;
-  }
-};
+import { apiFetch } from '../utils/api';
 
 /**
  * UserManagement
@@ -122,7 +59,7 @@ function UserManagement() {
 
   const [userSearchQuery, setUserSearchQuery] = useState('');
 
-  const filteredUsers = users.filter((u) => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()));
+  const filteredUsers = (users || []).filter((u) => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()));
 
   // Toggle selection of channels not assigned to user
   const handleSelectAvailable = (id) => {
@@ -188,7 +125,7 @@ function UserManagement() {
     setError('');
     try {
       const data = await apiFetch('/api/users/');
-      setUsers(data || []);
+      setUsers(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('خطا در دریافت کاربران:', err);
       setError('خطا در دریافت لیست کاربران. لطفا دوباره تلاش کنید.');
@@ -370,46 +307,48 @@ function UserManagement() {
       <Paper sx={{ p: 2, mb: 2 }}>
         <TableContainer>
           <Table size="small">
-              <TableHead>
+            <TableHead>
+              <TableRow>
+                <TableCell align="right">نام کاربری</TableCell>
+                <TableCell align="right">نقش</TableCell>
+                <TableCell align="right">وضعیت</TableCell>
+                <TableCell align="right">تعداد کانال‌ها</TableCell>
+                <TableCell align="center">اقدامات</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loadingUsers ? (
                 <TableRow>
-                  <TableCell align="right">نام کاربری</TableCell>
-                  <TableCell align="right">نقش</TableCell>
-                  <TableCell align="right">وضعیت</TableCell>
-                  <TableCell align="center">اقدامات</TableCell>
+                  <TableCell colSpan={5} align="center">در حال بارگذاری کاربران...</TableCell>
                 </TableRow>
-              </TableHead>
-              <TableBody>
-                {loadingUsers ? (
-                  <TableRow>
-                    <TableCell colSpan={4} align="center">در حال بارگذاری کاربران...</TableCell>
-                  </TableRow>
-                ) : users.filter(u => u.username.toLowerCase().includes(userSearchQuery.toLowerCase())).length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={4} align="center">کاربری یافت نشد.</TableCell>
-                  </TableRow>
-                ) : (
-                  users
-                    .filter(u => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()))
-                    .map((user) => (
-                      <TableRow key={user.id} hover>
-                        <TableCell align="right">{user.username}</TableCell>
-                        <TableCell align="right">{roles.find((r) => r.value === user.role)?.label || user.role}</TableCell>
-                        <TableCell align="right">{user.active ? 'فعال' : 'غیرفعال'}</TableCell>
-                        <TableCell align="center">
-                          <IconButton color="primary" size="small" onClick={() => handleClickOpen(user)}>
-                            <EditIcon />
-                          </IconButton>
-                          <IconButton color="error" size="small" onClick={() => handleDelete(user.id)} disabled={deletingId === user.id}>
-                            {deletingId === user.id ? '...' : <DeleteIcon />}
-                          </IconButton>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
+              ) : users.filter(u => u.username.toLowerCase().includes(userSearchQuery.toLowerCase())).length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} align="center">کاربری یافت نشد.</TableCell>
+                </TableRow>
+              ) : (
+                users
+                  .filter(u => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()))
+                  .map((user) => (
+                    <TableRow key={user.id} hover>
+                      <TableCell align="right">{user.username}</TableCell>
+                      <TableCell align="right">{roles.find((r) => r.value === user.role)?.label || user.role}</TableCell>
+                      <TableCell align="right">{user.active ? 'فعال' : 'غیرفعال'}</TableCell>
+                      <TableCell align="right">{user.channels?.length || 0}</TableCell>
+                      <TableCell align="center">
+                        <IconButton color="primary" size="small" onClick={() => handleClickOpen(user)}>
+                          <EditIcon />
+                        </IconButton>
+                        <IconButton color="error" size="small" onClick={() => handleDelete(user.id)} disabled={deletingId === user.id}>
+                          {deletingId === user.id ? '...' : <DeleteIcon />}
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Paper>
       <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth sx={{ '& .MuiDialog-paper': { width: 600, maxWidth: '600px' } }}>
         <DialogTitle sx={{ textAlign: 'right' }}>{editMode ? 'ویرایش کاربر' : 'افزودن کاربر جدید'}</DialogTitle>
         <DialogContent sx={{ textAlign: 'right' }}>

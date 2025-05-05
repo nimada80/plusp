@@ -9,10 +9,12 @@ from django.urls import path, include  # URL helpers
 from rest_framework.routers import DefaultRouter
 from . import views
 from .views import login_view, logout_view, user_view
+from .views import UserViewSet
+
 
 router = DefaultRouter()
 router.register(r'channels', views.ChannelViewSet)  # Channel CRUD endpoints
-router.register(r'users', views.UserViewSet)        # User CRUD endpoints
+router.register(r'users', UserViewSet, basename='user')        # User CRUD endpoints
 router.register(r'superadmins', views.SuperAdminViewSet)  # SuperAdmin CRUD endpoints
 
 urlpatterns = [
