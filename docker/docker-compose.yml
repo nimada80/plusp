@@ -70,11 +70,8 @@ services:
       # NEXT_ANALYTICS_BACKEND_PROVIDER: bigquery
 
   backend:
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
+    image: plusptt-backend:latest
     container_name: plusptt-backend
-    command: gunicorn admin_panel.wsgi:application --bind 0.0.0.0:8010 --workers 3
     volumes:
       - ../backend:/app
     ports:

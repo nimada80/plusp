@@ -25,6 +25,7 @@ import os
 import uuid
 from typing import Dict, Any, Optional
 import logging
+# بازگشت به استفاده اصلی
 from livekit import api
 
 logger = logging.getLogger(__name__)
@@ -874,7 +875,7 @@ def client_auth_view(request):
             try:
                 # ایجاد توکن برای دسترسی به اتاق
                 room_name = f"channel-{channel_id}"
-                access_token = api.tokens.AccessToken(
+                access_token = api.AccessToken(
                     api_key=LIVEKIT_API_KEY,
                     api_secret=LIVEKIT_API_SECRET
                 )
