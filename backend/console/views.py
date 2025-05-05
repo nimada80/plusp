@@ -11,7 +11,7 @@ from django.utils.decorators import method_decorator
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from .models import Channel, SuperAdmin
-from .serializers import ChannelSerializer, SuperAdminSerializer
+from .serializers import ChannelSerializer, SuperAdminSerializer, UserSerializer
 from django.contrib.auth.hashers import check_password
 from django.contrib.auth.models import User as DjangoUser
 from django.contrib.auth import authenticate, login, logout
@@ -103,6 +103,71 @@ class ChannelViewSet(viewsets.ModelViewSet):
     queryset = Channel.objects.using('supabase').none()  # تغییر به none() برای جلوگیری از دسترسی مستقیم
     serializer_class = ChannelSerializer
 
+    def _update_user_channels(self, channel_id: str, user_ids: list):
+        """به‌روزرسانی کانال‌های کاربران"""
+        if not user_ids or not isinstance(user_ids, list) or not channel_id:
+            logger.warning(f"لیست کاربران یا شناسه کانال نامعتبر است: users={user_ids}, channel_id={channel_id}")
+            return False
+            
+        try:
+            # دریافت اطلاعات کانال
+            channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+            if channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0):
+                logger.error(f"کانال با شناسه {channel_id} یافت نشد")
+                return False
+
+            # برای هر کاربر، لیست کانال‌ها را به‌روزرسانی کن
+            for user_id in user_ids:
+                # دریافت اطلاعات کاربر
+                user = _make_request('GET', f"/rest/v1/users?id=eq.{user_id}")
+                if user is True or user is None or (isinstance(user, list) and len(user) == 0):
+                    logger.error(f"کاربر با شناسه {user_id} یافت نشد")
+                    continue
+
+                user = user[0]
+                channels = user.get('channels', [])
+                
+                # اگر کانال در لیست کانال‌های کاربر نیست، اضافه کن
+                if channel_id not in channels:
+                    channels.append(channel_id)
+                    _make_request('PATCH', f"/rest/v1/users?id=eq.{user_id}", {'channels': channels})
+
+            return True
+        except Exception as e:
+            logger.error(f"خطا در به‌روزرسانی کانال‌های کاربران: {e}")
+            return False
+
+    def _remove_user_channels(self, channel_id: str, user_ids: list):
+        """حذف کانال از لیست کانال‌های کاربران"""
+        if not user_ids or not isinstance(user_ids, list) or not channel_id:
+            logger.warning(f"لیست کاربران یا شناسه کانال نامعتبر است: users={user_ids}, channel_id={channel_id}")
+            return False
+            
+        try:
+            # برای هر کاربر، کانال را از لیست کانال‌ها حذف کن
+            for user_id in user_ids:
+                # دریافت اطلاعات کاربر
+                user = _make_request('GET', f"/rest/v1/users?id=eq.{user_id}")
+                if user is True or user is None or (isinstance(user, list) and len(user) == 0):
+                    logger.error(f"کاربر با شناسه {user_id} یافت نشد")
+                    continue
+
+                # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
+                if isinstance(user, list) and len(user) > 0:
+                    user = user[0]
+                
+                channels = user.get('channels', [])
+                
+                # اگر کانال در لیست کانال‌های کاربر است، حذف کن
+                if channel_id in channels:
+                    channels.remove(channel_id)
+                    _make_request('PATCH', f"/rest/v1/users?id=eq.{user_id}", {'channels': channels})
+
+            return True
+        except Exception as e:
+            logger.error(f"خطا در حذف کانال از لیست کانال‌های کاربران: {e}")
+            return False
+
     def list(self, request):
         """
         دریافت لیست کانال‌ها از Supabase REST API به جای دسترسی مستقیم به دیتابیس
@@ -136,14 +201,19 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 rand_id = random.randint(1000000, 9999999)
                 # بررسی تکراری بودن شناسه
                 existing = _make_request('GET', f"/rest/v1/channels?channel_id=eq.{rand_id}")
-                if not existing or len(existing) == 0:
+                # اگر پاسخ true باشد (بولین) یا لیست خالی باشد، شناسه تکراری نیست
+                if existing is True or existing is None or (isinstance(existing, list) and len(existing) == 0):
                     break
                     
             # آماده‌سازی داده‌ها برای ارسال به API
             data = request.data.copy()
             data['channel_id'] = rand_id
+            data['authorized_users'] = data.get('authorized_users', [])
             
             # ارسال درخواست به Supabase REST API
+            logger.info(f"ارسال درخواست POST به http://kong:8000/rest/v1/channels")
+            logger.info(f"داده‌های ارسالی: {data}")
+            
             response = _make_request('POST', '/rest/v1/channels', data)
             
             if not response:
@@ -152,7 +222,39 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
                 
-            return Response(response, status=status.HTTP_201_CREATED)
+            # اگر پاسخ True است، یعنی درخواست موفق بوده اما داده‌ای برگشت داده نشده
+            # در این صورت، اطلاعات کانال را با یک درخواست GET دریافت می‌کنیم
+            channel_data = None
+            if response is True:
+                logger.info("پاسخ POST موفقیت‌آمیز بود. دریافت اطلاعات کانال با GET...")
+                channel_data = _make_request('GET', f"/rest/v1/channels?channel_id=eq.{rand_id}")
+                if isinstance(channel_data, list) and len(channel_data) > 0:
+                    channel_data = channel_data[0]
+                else:
+                    logger.info(f"دریافت اطلاعات کانال با GET نتیجه‌ای نداشت: {channel_data}")
+                    # ایجاد یک پاسخ موفقیت‌آمیز ساختگی
+                    channel_data = {
+                        "id": None,  # ID واقعی در دسترس نیست
+                        "channel_id": rand_id,
+                        "name": data.get('name', ''),
+                        "authorized_users": data.get('authorized_users', []),
+                        "created_at": datetime.datetime.now().isoformat()
+                    }
+            else:
+                # اگر پاسخ شیء است، از آن استفاده می‌کنیم
+                channel_data = response
+
+            # به‌روزرسانی کانال‌های کاربران
+            if channel_data and 'authorized_users' in data and data['authorized_users'] and isinstance(data['authorized_users'], list):
+                try:
+                    channel_id = channel_data.get('id')
+                    if channel_id:
+                        self._update_user_channels(channel_id, data['authorized_users'])
+                except Exception as e:
+                    logger.error(f"خطا در به‌روزرسانی کانال‌های کاربران: {e}")
+                    # این خطا نباید باعث شکست کل عملیات شود
+                
+            return Response(channel_data, status=status.HTTP_201_CREATED)
         except Exception as e:
             logger.error(f"خطا در ایجاد کانال در Supabase: {e}")
             return Response(
@@ -167,13 +269,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
         try:
             response = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
             
-            if not response or len(response) == 0:
+            if response is True or response is None or (isinstance(response, list) and len(response) == 0):
                 return Response(
                     {"detail": "Channel not found"},
                     status=status.HTTP_404_NOT_FOUND
                 )
                 
-            return Response(response[0], status=status.HTTP_200_OK)
+            # اگر پاسخ یک لیست است، اولین آیتم را برگردان
+            if isinstance(response, list) and len(response) > 0:
+                return Response(response[0], status=status.HTTP_200_OK)
+            
+            # اگر پاسخ یک آبجکت است
+            return Response(response, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"خطا در دریافت کانال از Supabase: {e}")
             return Response(
@@ -191,7 +298,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # برای اطمینان از اینکه channel_id تغییر نمی‌کند
             if 'channel_id' in data:
                 del data['channel_id']
-                
+
+            # دریافت اطلاعات کانال فعلی
+            current_channel = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
+            if current_channel is True or current_channel is None or (isinstance(current_channel, list) and len(current_channel) == 0):
+                return Response(
+                    {"detail": "Channel not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
+            if isinstance(current_channel, list) and len(current_channel) > 0:
+                current_channel = current_channel[0]
+            
+            # به‌روزرسانی کانال
             response = _make_request('PATCH', f"/rest/v1/channels?id=eq.{pk}", data)
             
             if not response:
@@ -199,19 +319,22 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     {"detail": "Failed to update channel in Supabase"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-                
-            # دریافت داده‌های بروز شده
-            updated_channel = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
-            
-            if not updated_channel or len(updated_channel) == 0:
-                return Response(
-                    {"detail": "Channel updated but could not retrieve updated data"},
-                    status=status.HTTP_200_OK
-                )
-                
-            return Response(updated_channel[0], status=status.HTTP_200_OK)
+
+            # به‌روزرسانی کانال‌های کاربران
+            if 'authorized_users' in data:
+                # حذف کانال از لیست کانال‌های کاربرانی که دیگر مجاز نیستند
+                removed_users = list(set(current_channel.get('authorized_users', [])) - set(data['authorized_users']))
+                if removed_users:
+                    self._remove_user_channels(pk, removed_users)
+
+                # اضافه کردن کانال به لیست کانال‌های کاربران جدید
+                new_users = list(set(data['authorized_users']) - set(current_channel.get('authorized_users', [])))
+                if new_users:
+                    self._update_user_channels(pk, new_users)
+
+            return Response(response, status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"خطا در بروزرسانی کانال در Supabase: {e}")
+            logger.error(f"خطا در به‌روزرسانی کانال در Supabase: {e}")
             return Response(
                 {"detail": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -222,6 +345,23 @@ class ChannelViewSet(viewsets.ModelViewSet):
         حذف یک کانال با استفاده از Supabase REST API
         """
         try:
+            # دریافت اطلاعات کانال
+            channel = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
+            if channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0):
+                return Response(
+                    {"detail": "Channel not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
+            if isinstance(channel, list) and len(channel) > 0:
+                channel = channel[0]
+                
+            # حذف کانال از لیست کانال‌های کاربران
+            if 'authorized_users' in channel and channel['authorized_users']:
+                self._remove_user_channels(pk, channel['authorized_users'])
+                
+            # حذف کانال
             response = _make_request('DELETE', f"/rest/v1/channels?id=eq.{pk}")
             
             if not response:
@@ -238,398 +378,302 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-@method_decorator(csrf_exempt, name='dispatch')
-class UserViewSet(viewsets.ViewSet):
+class UserViewSet(viewsets.ModelViewSet):
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]
+    queryset = DjangoUser.objects.using('supabase').none()  # تغییر به none() برای جلوگیری از دسترسی مستقیم
+    serializer_class = UserSerializer
+
+    def _update_channel_users(self, user_id: str, channel_ids: list):
+        """به‌روزرسانی کاربران مجاز کانال‌ها"""
+        if not channel_ids or not isinstance(channel_ids, list) or not user_id:
+            logger.warning(f"لیست کانال‌ها یا شناسه کاربر نامعتبر است: channels={channel_ids}, user_id={user_id}")
+            return False
+            
+        success = True
+        
+        try:
+            # برای هر کانال، لیست کاربران مجاز را به‌روزرسانی کن
+            for channel_id in channel_ids:
+                try:
+                    # دریافت اطلاعات کانال
+                    channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                    if not channel or len(channel) == 0:
+                        logger.error(f"کانال با شناسه {channel_id} یافت نشد")
+                        success = False
+                        continue
+
+                    channel = channel[0]
+                    authorized_users = channel.get('authorized_users', [])
+                    
+                    # اگر کاربر در لیست کاربران مجاز نیست، اضافه کن
+                    if user_id not in authorized_users:
+                        authorized_users.append(user_id)
+                        result = _make_request('PATCH', f"/rest/v1/channels?id=eq.{channel_id}", {'authorized_users': authorized_users})
+                        if not result:
+                            logger.error(f"خطا در به‌روزرسانی کاربران مجاز برای کانال {channel_id}")
+                            success = False
+                except Exception as e:
+                    logger.error(f"خطا در پردازش کانال {channel_id}: {str(e)}")
+                    success = False
+
+            return success
+        except Exception as e:
+            logger.error(f"خطا در به‌روزرسانی کاربران مجاز کانال‌ها: {e}")
+            return False
+
+    def _remove_channel_users(self, user_id: str, channel_ids: list):
+        """حذف کاربر از لیست کاربران مجاز کانال‌ها"""
+        if not channel_ids or not isinstance(channel_ids, list) or not user_id:
+            logger.warning(f"لیست کانال‌ها یا شناسه کاربر نامعتبر است: channels={channel_ids}, user_id={user_id}")
+            return False
+            
+        success = True
+        
+        try:
+            # برای هر کانال، کاربر را از لیست کاربران مجاز حذف کن
+            for channel_id in channel_ids:
+                try:
+                    # دریافت اطلاعات کانال
+                    channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                    if not channel or len(channel) == 0:
+                        logger.error(f"کانال با شناسه {channel_id} یافت نشد")
+                        success = False
+                        continue
+
+                    channel = channel[0]
+                    authorized_users = channel.get('authorized_users', [])
+                    
+                    # اگر کاربر در لیست کاربران مجاز است، حذف کن
+                    if user_id in authorized_users:
+                        authorized_users.remove(user_id)
+                        result = _make_request('PATCH', f"/rest/v1/channels?id=eq.{channel_id}", {'authorized_users': authorized_users})
+                        if not result:
+                            logger.error(f"خطا در حذف کاربر از کانال {channel_id}")
+                            success = False
+                except Exception as e:
+                    logger.error(f"خطا در پردازش حذف کاربر از کانال {channel_id}: {str(e)}")
+                    success = False
+
+            return success
+        except Exception as e:
+            logger.error(f"خطا در حذف کاربر از لیست کاربران مجاز کانال‌ها: {e}")
+            return False
+
+    def list(self, request):
+        """
+        دریافت لیست کاربران از Supabase REST API به جای دسترسی مستقیم به دیتابیس
+        """
+        try:
+            # استفاده از _make_request برای دریافت کاربران از Supabase REST API
+            response = _make_request('GET', '/rest/v1/users', None)
+            logger.info(f"دریافت کاربران از Supabase REST API: {response}")
+            
+            # اگر پاسخ وجود ندارد یا خطا دارد، آرایه خالی برگردان
+            if not response:
+                logger.warning("پاسخی از Supabase REST API دریافت نشد")
+                return Response([], status=status.HTTP_200_OK)
+                
+            # برگرداندن پاسخ API به عنوان نتیجه
+            return Response(response, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"خطا در دریافت کاربران از Supabase: {e}")
+            return Response(
+                {"detail": "Error fetching users from Supabase API"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def create(self, request, *args, **kwargs):
-        username = request.data.get('username')
-        password = request.data.get('password')
-        role = request.data.get('role', 'regular')
-        active = request.data.get('active', True)
-        channels = request.data.get('channels', [])
-
-        logger.info(f"دریافت درخواست ثبت کاربر جدید: username={username}, role={role}, active={active}, channels={channels}")
-
-        if not username or not password:
-            logger.error("نام کاربری یا رمز عبور وارد نشده است")
-            response = Response({'error': 'username و password الزامی هستند.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
-
+        """
+        ایجاد کاربر جدید با استفاده از Supabase Auth و REST API
+        """
         try:
-            # تبدیل نام کاربری به فرمت ایمیل برای Auth
-            email = f"{username}@example.com"
-
-            # ثبت کاربر در Supabase Auth
-            logger.info("شروع ثبت کاربر در Supabase Auth")
-            auth_data = {
-                "email": email,
-                "password": password,
-                "email_confirm": True,
-                "user_metadata": {
-                    "role": role,
-                    "active": active,
-                    "channels": channels
-                }
-            }
-
-            logger.info(f"داده‌های ارسالی به Auth: {auth_data}")
-            auth_response = _make_request(
-                "POST",
-                "/auth/v1/admin/users",
-                auth_data
-            )
-
-            if not auth_response:
-                logger.error("ثبت نام در Supabase Auth موفق نبود")
-                response = Response({'error': 'ثبت نام در Supabase Auth موفق نبود.'},
-                                status=status.HTTP_400_BAD_REQUEST)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            # دریافت uid از پاسخ Auth
-            auth_user_id = auth_response.get('id')
-            if not auth_user_id:
-                logger.error("شناسه کاربر در پاسخ Auth یافت نشد")
-                response = Response({'error': 'شناسه کاربر در پاسخ Auth یافت نشد.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            logger.info(f"کاربر با موفقیت در Auth ثبت شد. شناسه کاربر: {auth_user_id}")
-
-            # تبدیل شناسه Auth به UUID
-            try:
-                user_id = uuid.UUID(auth_user_id)
-            except ValueError:
-                logger.error(f"شناسه کاربر {auth_user_id} معتبر نیست")
-                # حذف کاربر از Auth
-                logger.info("حذف کاربر از Auth به دلیل شناسه نامعتبر")
-                _make_request(
-                    "DELETE",
-                    f"/auth/v1/admin/users/{auth_user_id}"
-                )
-                response = Response({'error': 'شناسه کاربر معتبر نیست.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            # ذخیره اطلاعات در جدول users (بدون @example.com و بدون رمز عبور)
-            user_data = {
-                'id': str(user_id),
-                'username': username,  # بدون @example.com
-                'role': role,
-                'active': active,
-                'channels': channels
-            }
-
-            logger.info(f"داده‌های ارسالی به جدول users: {user_data}")
-
-            # درج در جدول users
-            db_response = _make_request(
-                "POST",
-                "/rest/v1/users",
-                user_data
-            )
-
-            if not db_response:
-                logger.error("خطا در ذخیره اطلاعات کاربر در دیتابیس")
-                # حذف کاربر از Auth
-                logger.info("حذف کاربر از Auth به دلیل خطا در دیتابیس")
-                _make_request(
-                    "DELETE",
-                    f"/auth/v1/admin/users/{auth_user_id}"
-                )
-                response = Response({'error': 'خطا در ذخیره اطلاعات کاربر در دیتابیس.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            logger.info(f"کاربر با موفقیت در جدول users ذخیره شد: {db_response}")
-
-            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
-            response_data = {
-                    'success': True,
-                'message': 'کاربر جدید با موفقیت ثبت شد.',
-                    'user': {
-                    'id': str(user_id),
-                    'username': username,  # بدون @example.com
-                        'role': role,
-                        'active': active,
-                    'channels': channels
-                    }
-            }
+            # آماده‌سازی داده‌ها برای ارسال به API
+            data = request.data.copy()
             
-            response = Response(response_data, status=status.HTTP_201_CREATED)
-
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
+            username = data.get('username')
+            password = data.get('password')
+            role = data.get('role', 'regular')
+            active = data.get('active', True)
+            channels = data.get('channels', [])
             
-            return response
-
+            if not username or not password:
+                return Response(
+                    {"detail": "نام کاربری و رمز عبور الزامی است"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # بررسی اعتبار کانال‌ها
+            valid_channels = []
+            if channels:
+                try:
+                    for channel_id in channels:
+                        # بررسی وجود کانال
+                        channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                        if not (channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0)):
+                            valid_channels.append(channel_id)
+                        else:
+                            logger.warning(f"کانال با شناسه {channel_id} یافت نشد و از لیست کانال‌های کاربر حذف شد")
+                except Exception as e:
+                    logger.error(f"خطا در بررسی اعتبار کانال‌ها: {e}")
+            
+            # استفاده از create_user برای ساخت کاربر
+            logger.info(f"شروع فرآیند ساخت کاربر با نام کاربری {username}")
+            
+            user_data = create_user(
+                username=username,
+                password=password,
+                role=role,
+                active=active,
+                channels=valid_channels
+            )
+            
+            if not user_data:
+                return Response(
+                    {"detail": "خطا در ساخت کاربر در Supabase"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+            # به‌روزرسانی کانال‌ها برای کاربر جدید
+            if valid_channels:
+                try:
+                    self._update_channel_users(user_data.get('id'), valid_channels)
+                except Exception as e:
+                    logger.error(f"خطا در به‌روزرسانی کانال‌های کاربر: {e}")
+                    # این خطا نباید باعث شکست کل عملیات شود
+                
+            return Response(
+                UserSerializer(user_data).data,
+                status=status.HTTP_201_CREATED
+            )
+            
         except Exception as e:
-            logger.error(f"خطا در ثبت کاربر: {str(e)}")
+            logger.error(f"خطا در ساخت کاربر در Supabase: {e}")
             logger.error(f"جزئیات خطا: {traceback.format_exc()}")
-            # اگر کاربر در Auth ثبت شده بود، آن را حذف کن
-            if 'auth_user_id' in locals():
-                logger.info(f"حذف کاربر {auth_user_id} از Auth به دلیل خطا")
-                _make_request(
-                    "DELETE",
-                    f"/auth/v1/admin/users/{auth_user_id}"
-                )
-            response = Response({'error': 'خطا در ثبت کاربر', 'details': str(e)},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
-
-    def list(self, request, *args, **kwargs):
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def retrieve(self, request, pk=None):
+        """
+        دریافت اطلاعات یک کاربر خاص با استفاده از Supabase REST API
+        """
         try:
-            # دریافت لیست کاربران از دیتابیس
-            logger.info("دریافت لیست کاربران از دیتابیس")
-            db_response = _make_request(
-                "GET",
-                "/rest/v1/users?select=*"
-            )
-
-            if not db_response:
-                logger.error("خطا در دریافت لیست کاربران از دیتابیس")
-                response = Response({'error': 'خطا در دریافت لیست کاربران از دیتابیس.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            logger.info(f"لیست کاربران با موفقیت دریافت شد: {db_response}")
-
-            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
-            response = Response(db_response, status=status.HTTP_200_OK)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
-
+            response = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
+            
+            if not response or len(response) == 0:
+                return Response(
+                    {"detail": "User not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+                
+            return Response(response[0], status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"خطا در دریافت لیست کاربران: {str(e)}")
-            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
-            response = Response({'error': 'خطا در دریافت لیست کاربران', 'details': str(e)},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
-
+            logger.error(f"خطا در دریافت کاربر از Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
     def update(self, request, pk=None, *args, **kwargs):
+        """
+        بروزرسانی یک کاربر با استفاده از Supabase REST API
+        """
         try:
+            data = request.data.copy()
+            
             # دریافت اطلاعات کاربر فعلی
-            logger.info(f"دریافت اطلاعات کاربر با شناسه {pk}")
-            current_user = _make_request(
-                "GET",
-                f"/rest/v1/users?id=eq.{pk}&select=*"
-            )
-
-            if not current_user:
-                logger.error(f"کاربر با شناسه {pk} یافت نشد")
-                response = Response({'error': 'کاربر مورد نظر یافت نشد.'},
-                                status=status.HTTP_404_NOT_FOUND)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            current_user = current_user[0]
-            logger.info(f"اطلاعات کاربر فعلی: {current_user}")
-
-            # آماده‌سازی داده‌های جدید
-            new_username = request.data.get('username')
-            new_password = request.data.get('password')
-            new_role = request.data.get('role', current_user.get('role'))
-            new_active = request.data.get('active', current_user.get('active'))
-            new_channels = request.data.get('channels', current_user.get('channels', []))
-
-            # تبدیل نام کاربری به فرمت ایمیل برای Auth
-            email = f"{new_username}@example.com" if new_username else current_user.get('username')
-            # حذف @example.com اگر قبلاً وجود دارد
-            if email.endswith('@example.com@example.com'):
-                email = email.replace('@example.com@example.com', '@example.com')
-
-            # به‌روزرسانی در Auth
-            auth_data = {
-                "email": email,
-                "user_metadata": {
-                    "role": new_role,
-                    "active": new_active,
-                    "channels": new_channels
-                }
-            }
-
-            # اگر رمز عبور تغییر کرده، آن را فقط در Auth به‌روزرسانی کن
-            if new_password:
-                auth_data["password"] = new_password
-
-            logger.info(f"به‌روزرسانی کاربر در Auth: {auth_data}")
-            auth_response = _make_request(
-                "PUT",
-                f"/auth/v1/admin/users/{pk}",
-                auth_data
-            )
-
-            if not auth_response:
-                logger.error("خطا در به‌روزرسانی کاربر در Auth")
-                response = Response({'error': 'خطا در به‌روزرسانی کاربر در Auth.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            logger.info(f"کاربر با موفقیت در Auth به‌روزرسانی شد: {auth_response}")
-
-            # به‌روزرسانی در دیتابیس (بدون رمز عبور)
-            db_data = {
-                "username": new_username,  # ذخیره نام کاربری بدون @example.com
-                "role": new_role,
-                "active": new_active,
-                "channels": new_channels
-            }
-
-            logger.info(f"به‌روزرسانی کاربر در دیتابیس: {db_data}")
-            db_response = _make_request(
-                "PATCH",
-                f"/rest/v1/users?id=eq.{pk}",
-                db_data
-            )
-
-            if not db_response:
-                logger.error("خطا در به‌روزرسانی کاربر در دیتابیس")
-                # حذف تغییرات از Auth
-                logger.info("حذف تغییرات از Auth به دلیل خطا در دیتابیس")
-                _make_request(
-                    "PUT",
-                    f"/auth/v1/admin/users/{pk}",
-                    {
-                        "email": current_user.get('username'),
-                        "user_metadata": {
-                            "role": current_user.get('role'),
-                            "active": current_user.get('active'),
-                            "channels": current_user.get('channels', [])
-                        }
-                    }
+            current_user = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
+            if not current_user or len(current_user) == 0:
+                return Response(
+                    {"detail": "User not found"},
+                    status=status.HTTP_404_NOT_FOUND
                 )
-                response = Response({'error': 'خطا در به‌روزرسانی کاربر در دیتابیس.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            logger.info(f"کاربر با موفقیت در دیتابیس به‌روزرسانی شد: {db_response}")
-
-            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
-            response_data = {
-                'success': True,
-                'message': 'اطلاعات کاربر با موفقیت به‌روزرسانی شد.',
-                'user': {
-                    'id': pk,
-                    'username': new_username,  # برگرداندن نام کاربری بدون @example.com
-                    'role': new_role,
-                    'active': new_active,
-                    'channels': new_channels
-                }
-            }
+            current_user = current_user[0]
             
-            response = Response(response_data, status=status.HTTP_200_OK)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
+            # بررسی اعتبار کانال‌ها
+            if 'channels' in data:
+                valid_channels = []
+                for channel_id in data['channels']:
+                    # بررسی وجود کانال
+                    channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                    if channel and len(channel) > 0:
+                        valid_channels.append(channel_id)
+                    else:
+                        logger.warning(f"کانال با شناسه {channel_id} یافت نشد و از لیست کانال‌های کاربر حذف شد")
+                        
+                # جایگزینی لیست کانال‌ها با کانال‌های معتبر
+                data['channels'] = valid_channels
+            
+            # به‌روزرسانی کاربر
+            response = _make_request('PATCH', f"/rest/v1/users?id=eq.{pk}", data)
+            
+            if not response:
+                return Response(
+                    {"detail": "Failed to update user in Supabase"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
+            # به‌روزرسانی کاربران مجاز کانال‌ها
+            if 'channels' in data:
+                try:
+                    # حذف کاربر از لیست کاربران مجاز کانال‌هایی که دیگر در لیست کانال‌های کاربر نیستند
+                    removed_channels = list(set(current_user.get('channels', [])) - set(data['channels']))
+                    if removed_channels:
+                        self._remove_channel_users(pk, removed_channels)
+
+                    # اضافه کردن کاربر به لیست کاربران مجاز کانال‌های جدید
+                    new_channels = list(set(data['channels']) - set(current_user.get('channels', [])))
+                    if new_channels:
+                        self._update_channel_users(pk, new_channels)
+                except Exception as channel_err:
+                    logger.error(f"خطا در به‌روزرسانی کانال‌های مجاز: {channel_err}")
+                    # ادامه اجرا و بازگشت پاسخ موفق، زیرا کاربر به‌روزرسانی شده است
+                    logger.info("کاربر با موفقیت به‌روزرسانی شد اما در به‌روزرسانی کانال‌ها خطا رخ داد")
+
+            return Response(response, status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"خطا در به‌روزرسانی کاربر: {str(e)}")
-            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
-            response = Response({'error': 'خطا در به‌روزرسانی کاربر', 'details': str(e)},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
-
-    def destroy(self, request, pk=None, *args, **kwargs):
+            logger.error(f"خطا در به‌روزرسانی کاربر در Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def destroy(self, request, pk=None):
+        """
+        حذف یک کاربر با استفاده از Supabase REST API
+        """
         try:
-            # حذف کاربر از دیتابیس
-            logger.info(f"حذف کاربر با شناسه {pk} از دیتابیس")
-            db_response = _make_request(
-                "DELETE",
-                f"/rest/v1/users?id=eq.{pk}"
-            )
+            # دریافت اطلاعات کاربر
+            user = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
+            if not user or len(user) == 0:
+                return Response(
+                    {"detail": "User not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            user = user[0]
 
-            if not db_response:
-                logger.error(f"خطا در حذف کاربر {pk} از دیتابیس")
-                response = Response({'error': 'خطا در حذف کاربر از دیتابیس.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
+            # حذف کاربر از لیست کاربران مجاز کانال‌ها
+            if 'channels' in user:
+                self._remove_channel_users(pk, user['channels'])
 
-            # حذف کاربر از Auth
-            logger.info(f"حذف کاربر با شناسه {pk} از Auth")
-            auth_response = _make_request(
-                "DELETE",
-                f"/auth/v1/admin/users/{pk}"
-            )
-
-            # پاسخ خالی از Auth به معنی موفقیت‌آمیز بودن عملیات است
-            if auth_response is None:
-                logger.error(f"خطا در حذف کاربر {pk} از Auth")
-                response = Response({'error': 'خطا در حذف کاربر از Auth.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                if 'HTTP_ORIGIN' in request.META:
-                    response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                    response['Access-Control-Allow-Credentials'] = 'true'
-                return response
-
-            logger.info(f"کاربر با شناسه {pk} با موفقیت حذف شد")
-
-            # برگرداندن پاسخ موفقیت‌آمیز با هدرهای CORS
-            response_data = {
-                'success': True,
-                'message': 'کاربر با موفقیت حذف شد.'
-            }
+            # حذف کاربر
+            response = _make_request('DELETE', f"/rest/v1/users?id=eq.{pk}")
             
-            response = Response(response_data, status=status.HTTP_200_OK)
-            
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            
-            return response
-
+            if not response:
+                return Response(
+                    {"detail": "Failed to delete user in Supabase"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+                
+            return Response(status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
-            logger.error(f"خطا در حذف کاربر: {str(e)}")
-            logger.error(f"جزئیات خطا: {traceback.format_exc()}")
-            response = Response({'error': 'خطا در حذف کاربر', 'details': str(e)},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            if 'HTTP_ORIGIN' in request.META:
-                response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
-                response['Access-Control-Allow-Credentials'] = 'true'
-            return response
+            logger.error(f"خطا در حذف کاربر از Supabase: {e}")
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class SuperAdminViewSet(viewsets.ModelViewSet):
     authentication_classes = [SessionAuthentication]
