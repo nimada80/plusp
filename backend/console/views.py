@@ -25,10 +25,16 @@ import os
 import uuid
 from typing import Dict, Any, Optional
 import logging
+from livekit import api
 
 logger = logging.getLogger(__name__)
 
 from .supabase_client import create_user, get_user_by_email, update_user, delete_user, create_channel
+
+# متغیرهای محیطی برای LiveKit
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_SERVER_API_KEY")
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_SERVER_API_SECRET")
+LIVEKIT_HOST = os.getenv("LIVEKIT_SERVER_URL", "http://livekit:7880")
 
 def _make_request(method: str, path: str, data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """
@@ -735,4 +741,194 @@ def user_view(request):
         response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
         response['Access-Control-Allow-Credentials'] = 'true'
     return response
+
+@csrf_exempt
+@api_view(['POST', 'OPTIONS'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def client_auth_view(request):
+    """
+    API برای احراز هویت کاربر و ارسال توکن‌های LiveKit برای کانال‌های مجاز
+    
+    این API یوزرنیم، پسورد و آدرس سرور را دریافت می‌کند
+    سپس کاربر را احراز هویت می‌کند و در صورت صحت، لیست کانال‌های مجاز
+    و توکن دسترسی LiveKit برای هر کانال را برمی‌گرداند
+    """
+    if request.method == 'OPTIONS':
+        response = Response()
+        response['Access-Control-Allow-Origin'] = request.META.get('HTTP_ORIGIN', '*')
+        response['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response['Access-Control-Allow-Credentials'] = 'true'
+        response['Content-Length'] = '0'
+        return response
+
+    try:
+        # دریافت اطلاعات از درخواست
+        username = request.data.get('username')
+        password = request.data.get('password')
+        server_url = request.data.get('server_url', LIVEKIT_HOST)
+
+        if not username or not password:
+            return Response(
+                {'error': 'نام کاربری و رمز عبور الزامی است.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # بررسی اعتبار اطلاعات با استفاده از Supabase Auth
+        logger.info(f"درخواست احراز هویت برای کاربر {username}")
+        
+        auth_data = {
+            "email": username,
+            "password": password
+        }
+        
+        auth_response = _make_request(
+            "POST",
+            "/auth/v1/token?grant_type=password",
+            auth_data
+        )
+        
+        # اگر اطلاعات کاربر صحیح نباشد
+        if not auth_response or 'access_token' not in auth_response:
+            logger.error(f"احراز هویت کاربر {username} ناموفق بود")
+            return Response(
+                {'error': 'نام کاربری یا رمز عبور اشتباه است.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+            
+        user_id = auth_response.get('user', {}).get('id')
+        if not user_id:
+            logger.error("شناسه کاربر در پاسخ Auth یافت نشد")
+            return Response(
+                {'error': 'خطا در دریافت اطلاعات کاربر'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+            
+        logger.info(f"کاربر {username} با شناسه {user_id} با موفقیت احراز هویت شد")
+        
+        # دریافت اطلاعات کاربر از دیتابیس
+        user_data = _make_request(
+            "GET",
+            f"/rest/v1/users?id=eq.{user_id}&select=*"
+        )
+        
+        if not user_data or len(user_data) == 0:
+            logger.error(f"اطلاعات کاربر {username} در دیتابیس یافت نشد")
+            return Response(
+                {'error': 'اطلاعات کاربر یافت نشد.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        user = user_data[0]
+        
+        # بررسی فعال بودن کاربر
+        if not user.get('active', False):
+            logger.warn(f"کاربر {username} غیرفعال است")
+            return Response(
+                {'error': 'حساب کاربری شما غیرفعال شده است.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        # دریافت کانال‌های مجاز کاربر
+        user_channels = user.get('channels', [])
+        
+        # بررسی وجود کانال مجاز
+        if not user_channels or len(user_channels) == 0:
+            logger.warn(f"کاربر {username} هیچ کانال مجازی ندارد")
+            return Response(
+                {'error': 'شما به هیچ کانالی دسترسی ندارید.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        # دریافت اطلاعات کانال‌ها از دیتابیس
+        channels_data = []
+        
+        for channel_id in user_channels:
+            channel_data = _make_request(
+                "GET",
+                f"/rest/v1/channels?channel_id=eq.{channel_id}&select=*"
+            )
+            
+            if channel_data and len(channel_data) > 0:
+                channels_data.append(channel_data[0])
+        
+        # بررسی کلیدهای API LiveKit
+        if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+            logger.error("کلیدهای API LiveKit تنظیم نشده است")
+            return Response(
+                {'error': 'خطا در تنظیمات سرور'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+            
+        # ایجاد توکن LiveKit برای هر کانال
+        tokens = {}
+        
+        for channel in channels_data:
+            channel_id = channel.get('channel_id')
+            channel_name = channel.get('name')
+            
+            if not channel_id or not channel_name:
+                continue
+                
+            try:
+                # ایجاد توکن برای دسترسی به اتاق
+                room_name = f"channel-{channel_id}"
+                access_token = api.tokens.AccessToken(
+                    api_key=LIVEKIT_API_KEY,
+                    api_secret=LIVEKIT_API_SECRET
+                )
+                
+                # تنظیم نام کاربر و شناسه
+                access_token.identity = username
+                access_token.name = username
+                
+                # مجوزها
+                access_token.add_grant(room_name=room_name, room_join=True, room_publish=True, room_subscribe=True)
+                
+                # افزودن به لیست توکن‌ها
+                token_str = access_token.to_jwt()
+                tokens[channel_id] = {
+                    'token': token_str,
+                    'room': room_name,
+                    'name': channel_name
+                }
+                
+                logger.info(f"توکن LiveKit برای کاربر {username} و کانال {channel_id} ایجاد شد")
+                
+            except Exception as e:
+                logger.error(f"خطا در ایجاد توکن LiveKit برای کانال {channel_id}: {str(e)}")
+                
+        # بازگرداندن پاسخ
+        response_data = {
+            'success': True,
+            'user_id': user_id,
+            'username': username,
+            'channels': channels_data,
+            'tokens': tokens,
+            'server_url': server_url
+        }
+        
+        response = Response(response_data, status=status.HTTP_200_OK)
+        
+        if 'HTTP_ORIGIN' in request.META:
+            response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+            response['Access-Control-Allow-Credentials'] = 'true'
+            
+        return response
+        
+    except Exception as e:
+        logger.error(f"خطا در احراز هویت کاربر: {str(e)}")
+        logger.error(f"جزئیات خطا: {traceback.format_exc()}")
+        
+        response = Response(
+            {'error': 'خطای سرور در احراز هویت', 'details': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+        if 'HTTP_ORIGIN' in request.META:
+            response['Access-Control-Allow-Origin'] = request.META['HTTP_ORIGIN']
+            response['Access-Control-Allow-Credentials'] = 'true'
+            
+        return response
 
