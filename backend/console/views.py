@@ -579,9 +579,11 @@ class UserViewSet(viewsets.ModelViewSet):
     def update(self, request, pk=None, *args, **kwargs):
         """
         بروزرسانی یک کاربر با استفاده از Supabase REST API
+        همراه با تضمین همسانی داده‌ها بین auth و جدول users
         """
         try:
             data = request.data.copy()
+            original_data = data.copy()  # نگهداری داده‌های اصلی برای بازگشت احتمالی
             
             # دریافت اطلاعات کاربر فعلی
             current_user = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
@@ -606,33 +608,111 @@ class UserViewSet(viewsets.ModelViewSet):
                 # جایگزینی لیست کانال‌ها با کانال‌های معتبر
                 data['channels'] = valid_channels
             
-            # به‌روزرسانی کاربر
-            response = _make_request('PATCH', f"/rest/v1/users?id=eq.{pk}", data)
+            # تعیین نیاز به به‌روزرسانی اطلاعات auth
+            auth_update_needed = False
+            auth_data = {}
             
-            if not response:
-                return Response(
-                    {"detail": "Failed to update user in Supabase"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            # به‌روزرسانی کاربران مجاز کانال‌ها
-            if 'channels' in data:
+            if 'username' in data and data['username'] != current_user.get('username'):
+                auth_update_needed = True
+                # تبدیل نام کاربری به فرمت ایمیل اگر در قالب ایمیل نیست
+                email = data['username']
+                if '@' not in email:
+                    email = f"{email}@example.com"
+                auth_data['email'] = email
+            
+            if 'password' in data and data['password']:
+                auth_update_needed = True
+                auth_data['password'] = data['password']
+            
+            # آماده‌سازی داده‌های جدول users
+            users_data = data.copy()
+            if 'username' in users_data and '@example.com' in users_data['username']:
+                users_data['username'] = users_data['username'].replace('@example.com', '')
+            
+            # فاز 1: به‌روزرسانی اطلاعات در auth
+            auth_success = True
+            if auth_update_needed:
                 try:
-                    # حذف کاربر از لیست کاربران مجاز کانال‌هایی که دیگر در لیست کانال‌های کاربر نیستند
-                    removed_channels = list(set(current_user.get('channels', [])) - set(data['channels']))
-                    if removed_channels:
-                        self._remove_channel_users(pk, removed_channels)
+                    # به‌روزرسانی اطلاعات کاربر در Auth
+                    auth_response = _make_request('PUT', f"/auth/v1/admin/users/{pk}", auth_data)
+                    
+                    if not auth_response:
+                        auth_success = False
+                        logger.error(f"خطا در به‌روزرسانی اطلاعات auth کاربر {pk}")
+                except Exception as auth_err:
+                    auth_success = False
+                    logger.error(f"خطا در به‌روزرسانی auth: {auth_err}")
+            
+            # فاز 2: به‌روزرسانی اطلاعات در جدول users
+            # اگر auth با موفقیت به‌روزرسانی شد یا نیازی به به‌روزرسانی auth نبود
+            if auth_success or not auth_update_needed:
+                response = _make_request('PATCH', f"/rest/v1/users?id=eq.{pk}", users_data)
+                
+                if not response:
+                    # اگر auth با موفقیت به‌روزرسانی شد اما جدول users به‌روزرسانی نشد،
+                    # بازگشت به حالت قبل در auth
+                    if auth_success and auth_update_needed:
+                        try:
+                            # بازگشت به اطلاعات auth قبلی
+                            rollback_auth_data = {}
+                            if 'username' in original_data and '@' not in original_data['username']:
+                                rollback_auth_data['email'] = f"{current_user.get('username')}@example.com"
+                            
+                            if rollback_auth_data:
+                                _make_request('PUT', f"/auth/v1/admin/users/{pk}", rollback_auth_data)
+                                logger.info(f"اطلاعات auth با موفقیت به حالت قبل بازگشت")
+                        except Exception as rollback_err:
+                            logger.error(f"خطا در بازگشت تغییرات auth: {rollback_err}")
+                    
+                    return Response(
+                        {"detail": "خطا در به‌روزرسانی کاربر در Supabase"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                # به‌روزرسانی کاربران مجاز کانال‌ها
+                if 'channels' in data:
+                    try:
+                        # حذف کاربر از لیست کاربران مجاز کانال‌هایی که دیگر در لیست کانال‌های کاربر نیستند
+                        removed_channels = list(set(current_user.get('channels', [])) - set(data['channels']))
+                        if removed_channels:
+                            self._remove_channel_users(pk, removed_channels)
 
-                    # اضافه کردن کاربر به لیست کاربران مجاز کانال‌های جدید
-                    new_channels = list(set(data['channels']) - set(current_user.get('channels', [])))
-                    if new_channels:
-                        self._update_channel_users(pk, new_channels)
-                except Exception as channel_err:
-                    logger.error(f"خطا در به‌روزرسانی کانال‌های مجاز: {channel_err}")
-                    # ادامه اجرا و بازگشت پاسخ موفق، زیرا کاربر به‌روزرسانی شده است
-                    logger.info("کاربر با موفقیت به‌روزرسانی شد اما در به‌روزرسانی کانال‌ها خطا رخ داد")
-
-            return Response(response, status=status.HTTP_200_OK)
+                        # اضافه کردن کاربر به لیست کاربران مجاز کانال‌های جدید
+                        new_channels = list(set(data['channels']) - set(current_user.get('channels', [])))
+                        if new_channels:
+                            self._update_channel_users(pk, new_channels)
+                    except Exception as channel_err:
+                        logger.error(f"خطا در به‌روزرسانی کانال‌های مجاز: {channel_err}")
+                        # ادامه اجرا و بازگشت پاسخ موفق، زیرا کاربر به‌روزرسانی شده است
+                        logger.info("کاربر با موفقیت به‌روزرسانی شد اما در به‌روزرسانی کانال‌ها خطا رخ داد")
+                
+                return Response(response, status=status.HTTP_200_OK)
+            
+            # اگر auth با موفقیت به‌روزرسانی نشد
+            elif 'username' in data:
+                logger.warning("به‌روزرسانی auth ناموفق بود، فقط نام کاربری در جدول users به‌روزرسانی می‌شود")
+                # فقط نام کاربری اصلی (بدون @example.com) را به‌روزرسانی می‌کنیم
+                clean_data = {}
+                clean_data['username'] = data['username'].replace('@example.com', '')
+                
+                response = _make_request('PATCH', f"/rest/v1/users?id=eq.{pk}", clean_data)
+                
+                if not response:
+                    return Response(
+                        {"detail": "خطا در به‌روزرسانی نام کاربری در Supabase"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                return Response(
+                    {"detail": "نام کاربری به‌روزرسانی شد اما سایر تغییرات اعمال نشد"},
+                    status=status.HTTP_200_OK
+                )
+            
+            # اگر به‌روزرسانی auth ناموفق بود و نام کاربری هم وجود ندارد
+            return Response(
+                {"detail": "خطا در به‌روزرسانی کاربر در Supabase Auth"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         except Exception as e:
             logger.error(f"خطا در به‌روزرسانی کاربر در Supabase: {e}")
             return Response(
@@ -643,9 +723,10 @@ class UserViewSet(viewsets.ModelViewSet):
     def destroy(self, request, pk=None):
         """
         حذف یک کاربر با استفاده از Supabase REST API
+        با استفاده از الگوی تراکنش دو مرحله‌ای برای تضمین همسانی داده‌ها
         """
         try:
-            # دریافت اطلاعات کاربر
+            # مرحله 0: بررسی وجود کاربر
             user = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
             if not user or len(user) == 0:
                 return Response(
@@ -653,21 +734,135 @@ class UserViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
             user = user[0]
-
-            # حذف کاربر از لیست کاربران مجاز کانال‌ها
-            if 'channels' in user:
-                self._remove_channel_users(pk, user['channels'])
-
-            # حذف کاربر
-            response = _make_request('DELETE', f"/rest/v1/users?id=eq.{pk}")
             
-            if not response:
+            # نگهداری داده‌های اصلی برای بازگشت در صورت خطا
+            original_user = user.copy()
+            
+            # مرحله 1: آماده‌سازی - حذف ارتباطات کاربر با کانال‌ها
+            relations_removed = False
+            try:
+                # حذف کاربر از لیست کاربران مجاز کانال‌ها
+                if 'channels' in user and user['channels']:
+                    self._remove_channel_users(pk, user['channels'])
+                relations_removed = True
+                logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت حذف شد")
+            except Exception as rel_err:
+                logger.error(f"خطا در حذف ارتباطات کاربر {pk} با کانال‌ها: {rel_err}")
+                # ادامه می‌دهیم زیرا این مرحله حیاتی نیست
+            
+            # مرحله 2: حذف کاربر از جدول users
+            users_deleted = False
+            users_response = None
+            try:
+                users_response = _make_request('DELETE', f"/rest/v1/users?id=eq.{pk}")
+                
+                if not users_response:
+                    logger.error(f"خطا در حذف کاربر {pk} از جدول users")
+                    return Response(
+                        {"detail": "خطا در حذف کاربر از جدول users در Supabase"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                users_deleted = True
+                logger.info(f"کاربر {pk} با موفقیت از جدول users حذف شد")
+            except Exception as users_err:
+                logger.error(f"خطا در حذف کاربر {pk} از جدول users: {users_err}")
+                # اگر حذف از جدول users با خطا مواجه شود، فرایند را متوقف می‌کنیم
+                
+                # بازگشت ارتباطات کاربر با کانال‌ها اگر حذف شده بودند
+                if relations_removed and 'channels' in user and user['channels']:
+                    try:
+                        self._update_channel_users(pk, user['channels'])
+                        logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت بازگشت داده شد")
+                    except Exception as restore_err:
+                        logger.error(f"خطا در بازگشت ارتباطات کاربر {pk} با کانال‌ها: {restore_err}")
+                
                 return Response(
-                    {"detail": "Failed to delete user in Supabase"},
+                    {"detail": f"خطا در حذف کاربر از جدول users: {str(users_err)}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
+            
+            # مرحله 3: حذف کاربر از Supabase Auth
+            auth_deleted = False
+            try:
+                auth_response = _make_request('DELETE', f"/auth/v1/admin/users/{pk}")
                 
+                if not auth_response:
+                    logger.error(f"خطا در حذف کاربر {pk} از Auth")
+                    # اگر حذف از Auth با خطا مواجه شود اما از جدول users حذف شده باشد،
+                    # باید کاربر را در جدول users بازگردانیم
+                    if users_deleted:
+                        try:
+                            # بازگرداندن کاربر به جدول users
+                            restore_user = {
+                                'id': original_user.get('id'),
+                                'username': original_user.get('username'),
+                                'role': original_user.get('role', 'regular'),
+                                'active': original_user.get('active', True),
+                                'channels': original_user.get('channels', [])
+                            }
+                            restore_response = _make_request('POST', f"/rest/v1/users", restore_user)
+                            if restore_response:
+                                logger.info(f"کاربر {pk} با موفقیت به جدول users بازگردانده شد")
+                                
+                                # بازگرداندن ارتباطات کاربر با کانال‌ها
+                                if 'channels' in original_user and original_user['channels']:
+                                    try:
+                                        self._update_channel_users(pk, original_user['channels'])
+                                        logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت بازگردانده شد")
+                                    except Exception as restore_rel_err:
+                                        logger.error(f"خطا در بازگشت ارتباطات کاربر {pk} با کانال‌ها: {restore_rel_err}")
+                            else:
+                                logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users")
+                        except Exception as restore_err:
+                            logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users: {restore_err}")
+                    
+                    return Response(
+                        {"detail": "کاربر از جدول users حذف شد اما حذف از Auth با خطا مواجه شد."},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                auth_deleted = True
+                logger.info(f"کاربر {pk} با موفقیت از Auth حذف شد")
+            except Exception as auth_err:
+                logger.error(f"خطا در حذف کاربر {pk} از Auth: {auth_err}")
+                
+                # اگر حذف از Auth با خطا مواجه شود اما از جدول users حذف شده باشد،
+                # باید کاربر را در جدول users بازگردانیم
+                if users_deleted:
+                    try:
+                        # بازگرداندن کاربر به جدول users
+                        restore_user = {
+                            'id': original_user.get('id'),
+                            'username': original_user.get('username'),
+                            'role': original_user.get('role', 'regular'),
+                            'active': original_user.get('active', True),
+                            'channels': original_user.get('channels', [])
+                        }
+                        restore_response = _make_request('POST', f"/rest/v1/users", restore_user)
+                        if restore_response:
+                            logger.info(f"کاربر {pk} با موفقیت به جدول users بازگردانده شد")
+                            
+                            # بازگرداندن ارتباطات کاربر با کانال‌ها
+                            if 'channels' in original_user and original_user['channels']:
+                                try:
+                                    self._update_channel_users(pk, original_user['channels'])
+                                    logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت بازگردانده شد")
+                                except Exception as restore_rel_err:
+                                    logger.error(f"خطا در بازگشت ارتباطات کاربر {pk} با کانال‌ها: {restore_rel_err}")
+                        else:
+                            logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users")
+                    except Exception as restore_err:
+                        logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users: {restore_err}")
+                
+                return Response(
+                    {"detail": f"کاربر از جدول users حذف شد اما حذف از Auth با خطا مواجه شد: {str(auth_err)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # مرحله 4: همه مراحل با موفقیت انجام شد
+            logger.info(f"کاربر {pk} با موفقیت از سیستم حذف شد")
             return Response(status=status.HTTP_204_NO_CONTENT)
+            
         except Exception as e:
             logger.error(f"خطا در حذف کاربر از Supabase: {e}")
             return Response(
