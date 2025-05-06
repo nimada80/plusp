@@ -9,8 +9,11 @@ import os
 import sys
 import uuid
 
+# تنظیم مسیر برای پیدا کردن ماژول‌های پروژه
+sys.path.insert(0, '/app')
+
 # تنظیم متغیر محیطی DJANGO_SETTINGS_MODULE
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "admin_panel.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "backend.settings")
 
 # تنظیم لاگر
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
