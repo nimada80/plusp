@@ -85,9 +85,7 @@ def _make_request(method: str, path: str, data: Optional[Dict[str, Any]] = None)
 
         try:
             json_response = response.json()
-            # اگر پاسخ یک لیست خالی باشد، True برگردان
-            if isinstance(json_response, list) and not json_response:
-                return True
+            # لیست خالی را به عنوان لیست خالی برگردان نه True
             return json_response
         except ValueError:
             # اگر پاسخ JSON نباشد، True برگردان
@@ -110,27 +108,31 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return False
             
         try:
-            # دریافت اطلاعات کانال
-            channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+            # دریافت اطلاعات کانال فقط با استفاده از uid
+            channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
             if channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0):
-                logger.error(f"کانال با شناسه {channel_id} یافت نشد")
+                logger.error(f"کانال با uid {channel_id} یافت نشد")
                 return False
-
+            
+            # استخراج اطلاعات کانال
+            if isinstance(channel, list) and len(channel) > 0:
+                channel = channel[0]
+                
             # برای هر کاربر، لیست کانال‌ها را به‌روزرسانی کن
             for user_id in user_ids:
                 # دریافت اطلاعات کاربر
-                user = _make_request('GET', f"/rest/v1/users?id=eq.{user_id}")
+                user = _make_request('GET', f"/rest/v1/users?uid=eq.{user_id}")
                 if user is True or user is None or (isinstance(user, list) and len(user) == 0):
                     logger.error(f"کاربر با شناسه {user_id} یافت نشد")
                     continue
 
                 user = user[0]
-                channels = user.get('channels', [])
+                channels = user.get('allowed_users', [])
                 
                 # اگر کانال در لیست کانال‌های کاربر نیست، اضافه کن
                 if channel_id not in channels:
                     channels.append(channel_id)
-                    _make_request('PATCH', f"/rest/v1/users?id=eq.{user_id}", {'channels': channels})
+                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_users': channels})
 
             return True
         except Exception as e:
@@ -144,10 +146,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return False
             
         try:
+            # دریافت اطلاعات کانال فقط با استفاده از uid
+            channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
+            if channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0):
+                logger.error(f"کانال با uid {channel_id} یافت نشد")
+                return False
+            
+            # استخراج اطلاعات کانال
+            if isinstance(channel, list) and len(channel) > 0:
+                channel = channel[0]
+                
             # برای هر کاربر، کانال را از لیست کانال‌ها حذف کن
             for user_id in user_ids:
                 # دریافت اطلاعات کاربر
-                user = _make_request('GET', f"/rest/v1/users?id=eq.{user_id}")
+                user = _make_request('GET', f"/rest/v1/users?uid=eq.{user_id}")
                 if user is True or user is None or (isinstance(user, list) and len(user) == 0):
                     logger.error(f"کاربر با شناسه {user_id} یافت نشد")
                     continue
@@ -156,12 +168,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 if isinstance(user, list) and len(user) > 0:
                     user = user[0]
                 
-                channels = user.get('channels', [])
+                channels = user.get('allowed_users', [])
                 
                 # اگر کانال در لیست کانال‌های کاربر است، حذف کن
                 if channel_id in channels:
                     channels.remove(channel_id)
-                    _make_request('PATCH', f"/rest/v1/users?id=eq.{user_id}", {'channels': channels})
+                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_users': channels})
 
             return True
         except Exception as e:
@@ -182,7 +194,16 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 logger.warning("پاسخی از Supabase REST API دریافت نشد")
                 return Response([], status=status.HTTP_200_OK)
                 
-            # برگرداندن پاسخ API به عنوان نتیجه
+            # اگر پاسخ True است (عملیات موفق اما داده‌ای وجود ندارد)
+            if response is True:
+                logger.info("پاسخ دریافتی True است (عملیات موفق اما داده‌ای وجود ندارد)")
+                return Response([], status=status.HTTP_200_OK)
+                
+            # اگر پاسخ یک لیست است، همه آیتم‌ها را برگردان
+            if isinstance(response, list):
+                return Response(response, status=status.HTTP_200_OK)
+            
+            # اگر پاسخ یک آبجکت است
             return Response(response, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"خطا در دریافت کانال‌ها از Supabase: {e}")
@@ -194,62 +215,59 @@ class ChannelViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         """
         ایجاد کانال جدید با استفاده از Supabase REST API
+        هر کانال دارای یک شناسه منحصر به فرد uuid است
         """
         try:
-            # تولید یک شناسه تصادفی برای کانال
-            while True:
-                rand_id = random.randint(1000000, 9999999)
-                # بررسی تکراری بودن شناسه
-                existing = _make_request('GET', f"/rest/v1/channels?channel_id=eq.{rand_id}")
-                # اگر پاسخ true باشد (بولین) یا لیست خالی باشد، شناسه تکراری نیست
-                if existing is True or existing is None or (isinstance(existing, list) and len(existing) == 0):
-                    break
-                    
             # آماده‌سازی داده‌ها برای ارسال به API
             data = request.data.copy()
-            data['channel_id'] = rand_id
-            data['authorized_users'] = data.get('authorized_users', [])
+            name = data.get('name', '')
+            allowed_users = data.get('allowed_users', [])
             
-            # ارسال درخواست به Supabase REST API
-            logger.info(f"ارسال درخواست POST به http://kong:8000/rest/v1/channels")
-            logger.info(f"داده‌های ارسالی: {data}")
+            # استفاده از تابع create_channel
+            logger.info(f"ایجاد کانال جدید با نام '{name}'")
+            channel_data = create_channel(name=name, allowed_users=allowed_users)
             
-            response = _make_request('POST', '/rest/v1/channels', data)
-            
-            if not response:
+            if not channel_data:
                 return Response(
                     {"detail": "Failed to create channel in Supabase"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
                 
-            # اگر پاسخ True است، یعنی درخواست موفق بوده اما داده‌ای برگشت داده نشده
-            # در این صورت، اطلاعات کانال را با یک درخواست GET دریافت می‌کنیم
-            channel_data = None
-            if response is True:
-                logger.info("پاسخ POST موفقیت‌آمیز بود. دریافت اطلاعات کانال با GET...")
-                channel_data = _make_request('GET', f"/rest/v1/channels?channel_id=eq.{rand_id}")
-                if isinstance(channel_data, list) and len(channel_data) > 0:
-                    channel_data = channel_data[0]
+            # اگر channel_data یک boolean است (مثل True)، باید اطلاعات کانال را با یک درخواست GET دریافت کنیم
+            if isinstance(channel_data, bool):
+                logger.info("پاسخ create_channel بولین بود. دریافت اطلاعات کانال با GET...")
+                uid = channel_data.get('uid') if isinstance(channel_data, dict) else None
+                
+                if uid:
+                    channel_data = _make_request('GET', f"/rest/v1/channels?uid=eq.{uid}")
+                    if isinstance(channel_data, list) and len(channel_data) > 0:
+                        channel_data = channel_data[0]
+                    else:
+                        logger.info(f"دریافت اطلاعات کانال با GET نتیجه‌ای نداشت: {channel_data}")
+                        # ایجاد یک پاسخ موفقیت‌آمیز ساختگی
+                        channel_data = {
+                            "id": None,  # ID واقعی در دسترس نیست
+                            "name": name,
+                            "allowed_users": allowed_users,
+                            "uid": uid,
+                            "created_at": datetime.datetime.now().isoformat()
+                        }
                 else:
-                    logger.info(f"دریافت اطلاعات کانال با GET نتیجه‌ای نداشت: {channel_data}")
-                    # ایجاد یک پاسخ موفقیت‌آمیز ساختگی
+                    logger.info("شناسه uid برای دریافت کانال موجود نیست")
                     channel_data = {
-                        "id": None,  # ID واقعی در دسترس نیست
-                        "channel_id": rand_id,
-                        "name": data.get('name', ''),
-                        "authorized_users": data.get('authorized_users', []),
+                        "id": None,
+                        "name": name,
+                        "allowed_users": allowed_users,
+                        "uid": str(uuid.uuid4()),
                         "created_at": datetime.datetime.now().isoformat()
                     }
-            else:
-                # اگر پاسخ شیء است، از آن استفاده می‌کنیم
-                channel_data = response
 
             # به‌روزرسانی کانال‌های کاربران
-            if channel_data and 'authorized_users' in data and data['authorized_users'] and isinstance(data['authorized_users'], list):
+            if channel_data and 'allowed_users' in data and data['allowed_users'] and isinstance(data['allowed_users'], list):
                 try:
                     channel_id = channel_data.get('id')
                     if channel_id:
-                        self._update_user_channels(channel_id, data['authorized_users'])
+                        self._update_user_channels(channel_id, data['allowed_users'])
                 except Exception as e:
                     logger.error(f"خطا در به‌روزرسانی کانال‌های کاربران: {e}")
                     # این خطا نباید باعث شکست کل عملیات شود
@@ -267,7 +285,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         دریافت اطلاعات یک کانال خاص با استفاده از Supabase REST API
         """
         try:
-            response = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
+            response = _make_request('GET', f"/rest/v1/channels?uid=eq.{pk}")
             
             if response is True or response is None or (isinstance(response, list) and len(response) == 0):
                 return Response(
@@ -298,9 +316,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # برای اطمینان از اینکه channel_id تغییر نمی‌کند
             if 'channel_id' in data:
                 del data['channel_id']
-
+                
             # دریافت اطلاعات کانال فعلی
-            current_channel = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
+            current_channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{pk}")
             if current_channel is True or current_channel is None or (isinstance(current_channel, list) and len(current_channel) == 0):
                 return Response(
                     {"detail": "Channel not found"},
@@ -312,26 +330,36 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 current_channel = current_channel[0]
             
             # به‌روزرسانی کانال
-            response = _make_request('PATCH', f"/rest/v1/channels?id=eq.{pk}", data)
+            response = _make_request('PATCH', f"/rest/v1/channels?uid=eq.{pk}", data)
             
             if not response:
                 return Response(
                     {"detail": "Failed to update channel in Supabase"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-
+                
+            # اگر پاسخ True است، داده‌های به‌روزرسانی شده را برگردان
+            if response is True:
+                # دریافت اطلاعات کانال به‌روزرسانی شده
+                updated_channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{pk}")
+                if isinstance(updated_channel, list) and len(updated_channel) > 0:
+                    response = updated_channel[0]
+                else:
+                    # اگر نمی‌توانیم داده‌های به‌روزرسانی شده را دریافت کنیم، از داده‌های ورودی استفاده می‌کنیم
+                    response = {**current_channel, **data}
+                
             # به‌روزرسانی کانال‌های کاربران
-            if 'authorized_users' in data:
+            if 'allowed_users' in data:
                 # حذف کانال از لیست کانال‌های کاربرانی که دیگر مجاز نیستند
-                removed_users = list(set(current_channel.get('authorized_users', [])) - set(data['authorized_users']))
+                removed_users = list(set(current_channel.get('allowed_users', [])) - set(data['allowed_users']))
                 if removed_users:
                     self._remove_user_channels(pk, removed_users)
 
                 # اضافه کردن کانال به لیست کانال‌های کاربران جدید
-                new_users = list(set(data['authorized_users']) - set(current_channel.get('authorized_users', [])))
+                new_users = list(set(data['allowed_users']) - set(current_channel.get('allowed_users', [])))
                 if new_users:
                     self._update_user_channels(pk, new_users)
-
+                
             return Response(response, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"خطا در به‌روزرسانی کانال در Supabase: {e}")
@@ -342,39 +370,55 @@ class ChannelViewSet(viewsets.ModelViewSet):
     
     def destroy(self, request, pk=None):
         """
-        حذف یک کانال با استفاده از Supabase REST API
+        حذف کانال با استفاده از Supabase REST API
+        با استفاده از uid
         """
         try:
-            # دریافت اطلاعات کانال
-            channel = _make_request('GET', f"/rest/v1/channels?id=eq.{pk}")
-            if channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0):
+            logger.info(f"درخواست حذف کانال با شناسه {pk}")
+            
+            # اگر pk خالی است، خطا برگردان
+            if not pk:
+                logger.error("شناسه کانال برای حذف ارائه نشده است")
+                return Response(
+                    {"detail": "Channel ID not provided"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+            # ابتدا اطلاعات کانال را دریافت می‌کنیم - از uid استفاده می‌کنیم
+            channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{pk}")
+            
+            if not channel or (isinstance(channel, list) and len(channel) == 0):
+                logger.error(f"کانال با شناسه uid={pk} یافت نشد")
                 return Response(
                     {"detail": "Channel not found"},
                     status=status.HTTP_404_NOT_FOUND
                 )
                 
-            # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
+            # اگر پاسخ یک لیست است، اولین آیتم را استفاده می‌کنیم
             if isinstance(channel, list) and len(channel) > 0:
                 channel = channel[0]
                 
-            # حذف کانال از لیست کانال‌های کاربران
-            if 'authorized_users' in channel and channel['authorized_users']:
-                self._remove_user_channels(pk, channel['authorized_users'])
-                
-            # حذف کانال
-            response = _make_request('DELETE', f"/rest/v1/channels?id=eq.{pk}")
+            # حذف کانال از جدول channels با استفاده از uid
+            delete_response = _make_request('DELETE', f"/rest/v1/channels?uid=eq.{pk}")
             
-            if not response:
+            if delete_response is None:
+                logger.error(f"خطا در حذف کانال با uid={pk} از جدول channels")
                 return Response(
-                    {"detail": "Failed to delete channel from Supabase"},
+                    {"detail": "Failed to delete channel"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
                 
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        except Exception as e:
-            logger.error(f"خطا در حذف کانال از Supabase: {e}")
+            logger.info(f"کانال با uid={pk} با موفقیت حذف شد")
             return Response(
-                {"detail": str(e)},
+                {"detail": f"کانال {pk} با موفقیت حذف شد"},
+                status=status.HTTP_200_OK
+            )
+            
+        except Exception as e:
+            logger.error(f"خطا در حذف کانال با uid={pk}: {e}")
+            logger.error(traceback.format_exc())
+            return Response(
+                {"detail": f"Error deleting channel: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -391,25 +435,25 @@ class UserViewSet(viewsets.ModelViewSet):
             return False
             
         success = True
-        
+
         try:
             # برای هر کانال، لیست کاربران مجاز را به‌روزرسانی کن
             for channel_id in channel_ids:
                 try:
-                    # دریافت اطلاعات کانال
-                    channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                    # دریافت اطلاعات کانال فقط با استفاده از uid
+                    channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
                     if not channel or len(channel) == 0:
-                        logger.error(f"کانال با شناسه {channel_id} یافت نشد")
+                        logger.error(f"کانال با uid {channel_id} یافت نشد")
                         success = False
                         continue
 
                     channel = channel[0]
-                    authorized_users = channel.get('authorized_users', [])
+                    allowed_users = channel.get('allowed_users', [])
                     
                     # اگر کاربر در لیست کاربران مجاز نیست، اضافه کن
-                    if user_id not in authorized_users:
-                        authorized_users.append(user_id)
-                        result = _make_request('PATCH', f"/rest/v1/channels?id=eq.{channel_id}", {'authorized_users': authorized_users})
+                    if user_id not in allowed_users:
+                        allowed_users.append(user_id)
+                        result = _make_request('PATCH', f"/rest/v1/channels?uid=eq.{channel_id}", {'allowed_users': allowed_users})
                         if not result:
                             logger.error(f"خطا در به‌روزرسانی کاربران مجاز برای کانال {channel_id}")
                             success = False
@@ -434,20 +478,23 @@ class UserViewSet(viewsets.ModelViewSet):
             # برای هر کانال، کاربر را از لیست کاربران مجاز حذف کن
             for channel_id in channel_ids:
                 try:
-                    # دریافت اطلاعات کانال
-                    channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                    # دریافت اطلاعات کانال فقط با استفاده از uid
+                    channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
                     if not channel or len(channel) == 0:
-                        logger.error(f"کانال با شناسه {channel_id} یافت نشد")
+                        logger.error(f"کانال با uid {channel_id} یافت نشد")
                         success = False
                         continue
 
-                    channel = channel[0]
-                    authorized_users = channel.get('authorized_users', [])
+                    # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
+                    if isinstance(channel, list) and len(channel) > 0:
+                        channel = channel[0]
+                    
+                    allowed_users = channel.get('allowed_users', [])
                     
                     # اگر کاربر در لیست کاربران مجاز است، حذف کن
-                    if user_id in authorized_users:
-                        authorized_users.remove(user_id)
-                        result = _make_request('PATCH', f"/rest/v1/channels?id=eq.{channel_id}", {'authorized_users': authorized_users})
+                    if user_id in allowed_users:
+                        allowed_users.remove(user_id)
+                        result = _make_request('PATCH', f"/rest/v1/channels?uid=eq.{channel_id}", {'allowed_users': allowed_users})
                         if not result:
                             logger.error(f"خطا در حذف کاربر از کانال {channel_id}")
                             success = False
@@ -468,7 +515,7 @@ class UserViewSet(viewsets.ModelViewSet):
             # استفاده از _make_request برای دریافت کاربران از Supabase REST API
             response = _make_request('GET', '/rest/v1/users', None)
             logger.info(f"دریافت کاربران از Supabase REST API: {response}")
-            
+
             # اگر پاسخ وجود ندارد یا خطا دارد، آرایه خالی برگردان
             if not response:
                 logger.warning("پاسخی از Supabase REST API دریافت نشد")
@@ -495,7 +542,7 @@ class UserViewSet(viewsets.ModelViewSet):
             password = data.get('password')
             role = data.get('role', 'regular')
             active = data.get('active', True)
-            channels = data.get('channels', [])
+            channels = data.get('allowed_channels', [])
             
             if not username or not password:
                 return Response(
@@ -508,12 +555,12 @@ class UserViewSet(viewsets.ModelViewSet):
             if channels:
                 try:
                     for channel_id in channels:
-                        # بررسی وجود کانال
-                        channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
-                        if not (channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0)):
+                        # دریافت اطلاعات کانال فقط با استفاده از uid
+                        channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
+                        if channel and len(channel) > 0:
                             valid_channels.append(channel_id)
                         else:
-                            logger.warning(f"کانال با شناسه {channel_id} یافت نشد و از لیست کانال‌های کاربر حذف شد")
+                            logger.warning(f"کانال با uid {channel_id} یافت نشد و از لیست کانال‌های کاربر حذف شد")
                 except Exception as e:
                     logger.error(f"خطا در بررسی اعتبار کانال‌ها: {e}")
             
@@ -525,7 +572,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 password=password,
                 role=role,
                 active=active,
-                channels=valid_channels
+                allowed_channels=valid_channels
             )
             
             if not user_data:
@@ -546,7 +593,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 UserSerializer(user_data).data,
                 status=status.HTTP_201_CREATED
             )
-            
+
         except Exception as e:
             logger.error(f"خطا در ساخت کاربر در Supabase: {e}")
             logger.error(f"جزئیات خطا: {traceback.format_exc()}")
@@ -560,7 +607,7 @@ class UserViewSet(viewsets.ModelViewSet):
         دریافت اطلاعات یک کاربر خاص با استفاده از Supabase REST API
         """
         try:
-            response = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
+            response = _make_request('GET', f"/rest/v1/users?uid=eq.{pk}")
             
             if not response or len(response) == 0:
                 return Response(
@@ -575,7 +622,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 {"detail": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    
+
     def update(self, request, pk=None, *args, **kwargs):
         """
         بروزرسانی یک کاربر با استفاده از Supabase REST API
@@ -586,7 +633,7 @@ class UserViewSet(viewsets.ModelViewSet):
             original_data = data.copy()  # نگهداری داده‌های اصلی برای بازگشت احتمالی
             
             # دریافت اطلاعات کاربر فعلی
-            current_user = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
+            current_user = _make_request('GET', f"/rest/v1/users?uid=eq.{pk}")
             if not current_user or len(current_user) == 0:
                 return Response(
                     {"detail": "User not found"},
@@ -595,18 +642,18 @@ class UserViewSet(viewsets.ModelViewSet):
             current_user = current_user[0]
             
             # بررسی اعتبار کانال‌ها
-            if 'channels' in data:
+            if 'allowed_channels' in data:
                 valid_channels = []
-                for channel_id in data['channels']:
-                    # بررسی وجود کانال
-                    channel = _make_request('GET', f"/rest/v1/channels?id=eq.{channel_id}")
+                for channel_id in data['allowed_channels']:
+                    # دریافت اطلاعات کانال فقط با استفاده از uid
+                    channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
                     if channel and len(channel) > 0:
                         valid_channels.append(channel_id)
                     else:
-                        logger.warning(f"کانال با شناسه {channel_id} یافت نشد و از لیست کانال‌های کاربر حذف شد")
-                        
+                        logger.warning(f"کانال با uid {channel_id} یافت نشد و از لیست کانال‌های کاربر حذف شد")
+
                 # جایگزینی لیست کانال‌ها با کانال‌های معتبر
-                data['channels'] = valid_channels
+                data['allowed_channels'] = valid_channels
             
             # تعیین نیاز به به‌روزرسانی اطلاعات auth
             auth_update_needed = False
@@ -628,26 +675,27 @@ class UserViewSet(viewsets.ModelViewSet):
             users_data = data.copy()
             if 'username' in users_data and '@example.com' in users_data['username']:
                 users_data['username'] = users_data['username'].replace('@example.com', '')
-            
+
             # فاز 1: به‌روزرسانی اطلاعات در auth
             auth_success = True
+            auth_response = None # مقداردهی اولیه auth_response
             if auth_update_needed:
                 try:
                     # به‌روزرسانی اطلاعات کاربر در Auth
-                    auth_response = _make_request('PUT', f"/auth/v1/admin/users/{pk}", auth_data)
-                    
-                    if not auth_response:
+                    auth_response = _make_request('PUT', f"/auth/v1/admin/users?uid=eq.{pk}", auth_data)
+
+                    if not auth_response: # انتقال این بلوک به داخل try
                         auth_success = False
                         logger.error(f"خطا در به‌روزرسانی اطلاعات auth کاربر {pk}")
-                except Exception as auth_err:
+                except Exception as e: # اصلاح تورفتگی این except و بلوک آن
                     auth_success = False
-                    logger.error(f"خطا در به‌روزرسانی auth: {auth_err}")
-            
+                    logger.error(f"خطا در به‌روزرسانی auth: {e}")
+
             # فاز 2: به‌روزرسانی اطلاعات در جدول users
             # اگر auth با موفقیت به‌روزرسانی شد یا نیازی به به‌روزرسانی auth نبود
             if auth_success or not auth_update_needed:
-                response = _make_request('PATCH', f"/rest/v1/users?id=eq.{pk}", users_data)
-                
+                response = _make_request('PATCH', f"/rest/v1/users?uid=eq.{pk}", users_data)
+
                 if not response:
                     # اگر auth با موفقیت به‌روزرسانی شد اما جدول users به‌روزرسانی نشد،
                     # بازگشت به حالت قبل در auth
@@ -659,7 +707,7 @@ class UserViewSet(viewsets.ModelViewSet):
                                 rollback_auth_data['email'] = f"{current_user.get('username')}@example.com"
                             
                             if rollback_auth_data:
-                                _make_request('PUT', f"/auth/v1/admin/users/{pk}", rollback_auth_data)
+                                _make_request('PUT', f"/auth/v1/admin/users?uid=eq.{pk}", rollback_auth_data)
                                 logger.info(f"اطلاعات auth با موفقیت به حالت قبل بازگشت")
                         except Exception as rollback_err:
                             logger.error(f"خطا در بازگشت تغییرات auth: {rollback_err}")
@@ -670,15 +718,15 @@ class UserViewSet(viewsets.ModelViewSet):
                     )
                 
                 # به‌روزرسانی کاربران مجاز کانال‌ها
-                if 'channels' in data:
+                if 'allowed_channels' in data:
                     try:
                         # حذف کاربر از لیست کاربران مجاز کانال‌هایی که دیگر در لیست کانال‌های کاربر نیستند
-                        removed_channels = list(set(current_user.get('channels', [])) - set(data['channels']))
+                        removed_channels = list(set(current_user.get('allowed_users', [])) - set(data['allowed_channels']))
                         if removed_channels:
                             self._remove_channel_users(pk, removed_channels)
 
                         # اضافه کردن کاربر به لیست کاربران مجاز کانال‌های جدید
-                        new_channels = list(set(data['channels']) - set(current_user.get('channels', [])))
+                        new_channels = list(set(data['allowed_channels']) - set(current_user.get('allowed_users', [])))
                         if new_channels:
                             self._update_channel_users(pk, new_channels)
                     except Exception as channel_err:
@@ -695,7 +743,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 clean_data = {}
                 clean_data['username'] = data['username'].replace('@example.com', '')
                 
-                response = _make_request('PATCH', f"/rest/v1/users?id=eq.{pk}", clean_data)
+                response = _make_request('PATCH', f"/rest/v1/users?uid=eq.{pk}", clean_data)
                 
                 if not response:
                     return Response(
@@ -726,14 +774,20 @@ class UserViewSet(viewsets.ModelViewSet):
         با استفاده از الگوی تراکنش دو مرحله‌ای برای تضمین همسانی داده‌ها
         """
         try:
+            logger.info(f"شروع فرایند حذف کاربر با شناسه {pk}")
+            
             # مرحله 0: بررسی وجود کاربر
-            user = _make_request('GET', f"/rest/v1/users?id=eq.{pk}")
-            if not user or len(user) == 0:
+            user = _make_request('GET', f"/rest/v1/users?uid=eq.{pk}")
+            if not user or (isinstance(user, list) and len(user) == 0):
+                logger.warning(f"کاربر با شناسه {pk} یافت نشد")
                 return Response(
                     {"detail": "User not found"},
                     status=status.HTTP_404_NOT_FOUND
                 )
-            user = user[0]
+            
+            # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
+            if isinstance(user, list) and len(user) > 0:
+                user = user[0]
             
             # نگهداری داده‌های اصلی برای بازگشت در صورت خطا
             original_user = user.copy()
@@ -742,129 +796,114 @@ class UserViewSet(viewsets.ModelViewSet):
             relations_removed = False
             try:
                 # حذف کاربر از لیست کاربران مجاز کانال‌ها
-                if 'channels' in user and user['channels']:
-                    self._remove_channel_users(pk, user['channels'])
+                if 'allowed_channels' in user and user['allowed_channels']:
+                    self._remove_channel_users(pk, user['allowed_channels'])
+                    logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت حذف شد")
                 relations_removed = True
-                logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت حذف شد")
             except Exception as rel_err:
                 logger.error(f"خطا در حذف ارتباطات کاربر {pk} با کانال‌ها: {rel_err}")
                 # ادامه می‌دهیم زیرا این مرحله حیاتی نیست
             
-            # مرحله 2: حذف کاربر از جدول users
-            users_deleted = False
-            users_response = None
-            try:
-                users_response = _make_request('DELETE', f"/rest/v1/users?id=eq.{pk}")
-                
-                if not users_response:
-                    logger.error(f"خطا در حذف کاربر {pk} از جدول users")
-                    return Response(
-                        {"detail": "خطا در حذف کاربر از جدول users در Supabase"},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-                users_deleted = True
-                logger.info(f"کاربر {pk} با موفقیت از جدول users حذف شد")
-            except Exception as users_err:
-                logger.error(f"خطا در حذف کاربر {pk} از جدول users: {users_err}")
-                # اگر حذف از جدول users با خطا مواجه شود، فرایند را متوقف می‌کنیم
-                
-                # بازگشت ارتباطات کاربر با کانال‌ها اگر حذف شده بودند
-                if relations_removed and 'channels' in user and user['channels']:
-                    try:
-                        self._update_channel_users(pk, user['channels'])
-                        logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت بازگشت داده شد")
-                    except Exception as restore_err:
-                        logger.error(f"خطا در بازگشت ارتباطات کاربر {pk} با کانال‌ها: {restore_err}")
-                
-                return Response(
-                    {"detail": f"خطا در حذف کاربر از جدول users: {str(users_err)}"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
-            # مرحله 3: حذف کاربر از Supabase Auth
+            # مرحله 2: حذف کاربر از Supabase Auth (اول Auth حذف می‌کنیم، سپس جدول users)
             auth_deleted = False
             try:
+                logger.info(f"تلاش برای حذف کاربر {pk} از Auth")
                 auth_response = _make_request('DELETE', f"/auth/v1/admin/users/{pk}")
                 
-                if not auth_response:
-                    logger.error(f"خطا در حذف کاربر {pk} از Auth")
-                    # اگر حذف از Auth با خطا مواجه شود اما از جدول users حذف شده باشد،
-                    # باید کاربر را در جدول users بازگردانیم
-                    if users_deleted:
-                        try:
-                            # بازگرداندن کاربر به جدول users
-                            restore_user = {
-                                'id': original_user.get('id'),
-                                'username': original_user.get('username'),
-                                'role': original_user.get('role', 'regular'),
-                                'active': original_user.get('active', True),
-                                'channels': original_user.get('channels', [])
-                            }
-                            restore_response = _make_request('POST', f"/rest/v1/users", restore_user)
-                            if restore_response:
-                                logger.info(f"کاربر {pk} با موفقیت به جدول users بازگردانده شد")
-                                
-                                # بازگرداندن ارتباطات کاربر با کانال‌ها
-                                if 'channels' in original_user and original_user['channels']:
-                                    try:
-                                        self._update_channel_users(pk, original_user['channels'])
-                                        logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت بازگردانده شد")
-                                    except Exception as restore_rel_err:
-                                        logger.error(f"خطا در بازگشت ارتباطات کاربر {pk} با کانال‌ها: {restore_rel_err}")
-                            else:
-                                logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users")
-                        except Exception as restore_err:
-                            logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users: {restore_err}")
+                # بررسی نتیجه حذف در Auth
+                if auth_response is None:
+                    # بررسی دقیق وضعیت حذف در Auth با درخواست مجدد
+                    auth_check = _make_request('GET', f"/auth/v1/admin/users/{pk}")
                     
+                    if auth_check is None or (isinstance(auth_check, list) and len(auth_check) == 0) or (
+                        isinstance(auth_check, dict) and ('error_code' in auth_check or 'code' in auth_check)
+                    ):
+                        # کاربر در Auth وجود ندارد، عملیات حذف موفق بوده است
+                        logger.info(f"کاربر {pk} در Auth یافت نشد، احتمالاً حذف شده")
+                        auth_deleted = True
+                    else:
+                        logger.error(f"خطا در حذف کاربر {pk} از Auth - کاربر همچنان وجود دارد")
+                        return Response(
+                            {"detail": "خطا در حذف کاربر از Auth"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                        )
+                else:
+                    auth_deleted = True
+                    logger.info(f"کاربر {pk} با موفقیت از Auth حذف شد")
+            
+            except Exception as auth_err:
+                error_msg = str(auth_err)
+                logger.error(f"خطا در حذف کاربر {pk} از Auth: {error_msg}")
+                
+                # اگر خطا مربوط به 'Database error loading user' یا 'not_found' باشد، احتمالاً کاربر قبلاً از Auth حذف شده است
+                if "Database error loading user" in error_msg or "not_found" in error_msg or "unexpected_failure" in error_msg:
+                    logger.info(f"کاربر {pk} احتمالاً قبلاً از Auth حذف شده، ادامه عملیات...")
+                    auth_deleted = True
+                else:
+                    # برای سایر خطاها، فرایند را متوقف می‌کنیم
                     return Response(
-                        {"detail": "کاربر از جدول users حذف شد اما حذف از Auth با خطا مواجه شد."},
+                        {"detail": f"خطا در حذف کاربر از Auth: {error_msg}"},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
-                
-                auth_deleted = True
-                logger.info(f"کاربر {pk} با موفقیت از Auth حذف شد")
-            except Exception as auth_err:
-                logger.error(f"خطا در حذف کاربر {pk} از Auth: {auth_err}")
-                
-                # اگر حذف از Auth با خطا مواجه شود اما از جدول users حذف شده باشد،
-                # باید کاربر را در جدول users بازگردانیم
-                if users_deleted:
-                    try:
-                        # بازگرداندن کاربر به جدول users
-                        restore_user = {
-                            'id': original_user.get('id'),
-                            'username': original_user.get('username'),
-                            'role': original_user.get('role', 'regular'),
-                            'active': original_user.get('active', True),
-                            'channels': original_user.get('channels', [])
-                        }
-                        restore_response = _make_request('POST', f"/rest/v1/users", restore_user)
-                        if restore_response:
-                            logger.info(f"کاربر {pk} با موفقیت به جدول users بازگردانده شد")
-                            
-                            # بازگرداندن ارتباطات کاربر با کانال‌ها
-                            if 'channels' in original_user and original_user['channels']:
-                                try:
-                                    self._update_channel_users(pk, original_user['channels'])
-                                    logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت بازگردانده شد")
-                                except Exception as restore_rel_err:
-                                    logger.error(f"خطا در بازگشت ارتباطات کاربر {pk} با کانال‌ها: {restore_rel_err}")
+            
+            # مرحله 3: حذف کاربر از جدول users
+            users_deleted = False
+            if auth_deleted:
+                try:
+                    logger.info(f"تلاش برای حذف کاربر {pk} از جدول users")
+                    users_response = _make_request('DELETE', f"/rest/v1/users?uid=eq.{pk}")
+
+                    if users_response is None:
+                        # بررسی آیا کاربر واقعاً حذف شده است
+                        check_user = _make_request('GET', f"/rest/v1/users?uid=eq.{pk}")
+                        if check_user is None or (isinstance(check_user, list) and len(check_user) == 0):
+                            users_deleted = True
+                            logger.info(f"کاربر {pk} با موفقیت از جدول users حذف شد")
                         else:
-                            logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users")
-                    except Exception as restore_err:
-                        logger.error(f"خطا در بازگرداندن کاربر {pk} به جدول users: {restore_err}")
+                            logger.error(f"خطا در حذف کاربر {pk} از جدول users - کاربر همچنان وجود دارد")
+                            return Response(
+                                {"detail": "خطا در حذف کاربر از جدول users"},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                            )
+                    else:
+                        users_deleted = True
+                        logger.info(f"کاربر {pk} با موفقیت از جدول users حذف شد")
                 
+                except Exception as users_err:
+                    logger.error(f"خطا در حذف کاربر {pk} از جدول users: {users_err}")
+                    
+                    # اگر از Auth حذف شده اما از جدول users حذف نشده، یک پیام هشدار برگردان
+                    if auth_deleted:
+                        return Response(
+                            {"detail": f"هشدار: کاربر از Auth حذف شد اما از جدول users حذف نشد. خطا: {str(users_err)}"},
+                            status=status.HTTP_200_OK
+                        )
+                    else:
+                        return Response(
+                            {"detail": f"خطا در حذف کاربر: {str(users_err)}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                        )
+            
+            # مرحله 4: برگرداندن پاسخ نهایی
+            if users_deleted and auth_deleted:
                 return Response(
-                    {"detail": f"کاربر از جدول users حذف شد اما حذف از Auth با خطا مواجه شد: {str(auth_err)}"},
+                    {"detail": f"کاربر {pk} با موفقیت حذف شد"},
+                    status=status.HTTP_200_OK
+                )
+            elif auth_deleted:
+                return Response(
+                    {"detail": f"کاربر از Auth حذف شد اما از جدول users حذف نشد"},
+                    status=status.HTTP_200_OK
+                )
+            else:
+                return Response(
+                    {"detail": "خطای نامشخص در حذف کاربر"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-            
-            # مرحله 4: همه مراحل با موفقیت انجام شد
-            logger.info(f"کاربر {pk} با موفقیت از سیستم حذف شد")
-            return Response(status=status.HTTP_204_NO_CONTENT)
-            
+                
         except Exception as e:
             logger.error(f"خطا در حذف کاربر از Supabase: {e}")
+            logger.error(traceback.format_exc())
             return Response(
                 {"detail": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -1055,7 +1094,7 @@ def client_auth_view(request):
         # دریافت اطلاعات کاربر از دیتابیس
         user_data = _make_request(
             "GET",
-            f"/rest/v1/users?id=eq.{user_id}&select=*"
+            f"/rest/v1/users?uid=eq.{user_id}&select=*"
         )
         
         if not user_data or len(user_data) == 0:
@@ -1076,7 +1115,7 @@ def client_auth_view(request):
             )
             
         # دریافت کانال‌های مجاز کاربر
-        user_channels = user.get('channels', [])
+        user_channels = user.get('allowed_users', [])
         
         # بررسی وجود کانال مجاز
         if not user_channels or len(user_channels) == 0:
@@ -1092,7 +1131,7 @@ def client_auth_view(request):
         for channel_id in user_channels:
             channel_data = _make_request(
                 "GET",
-                f"/rest/v1/channels?channel_id=eq.{channel_id}&select=*"
+                f"/rest/v1/channels?uid=eq.{channel_id}&select=*"
             )
             
             if isinstance(channel_data, list) and len(channel_data) > 0:
