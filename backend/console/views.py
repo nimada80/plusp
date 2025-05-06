@@ -423,8 +423,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             )
 
 class UserViewSet(viewsets.ModelViewSet):
-    authentication_classes = [SessionAuthentication]
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []  # برداشتن نیاز به احراز هویت
+    permission_classes = [AllowAny]  # اجازه دسترسی به همه
     queryset = DjangoUser.objects.using('supabase').none()  # تغییر به none() برای جلوگیری از دسترسی مستقیم
     serializer_class = UserSerializer
 
@@ -840,7 +840,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     logger.info(f"کاربر {pk} احتمالاً قبلاً از Auth حذف شده، ادامه عملیات...")
                     auth_deleted = True
                 else:
-                    # برای سایر خطاها، فرایند را متوقف می‌کنیم
+                    # برای سایر خطاها، فرآیند را متوقف می‌کنیم
                     return Response(
                         {"detail": f"خطا در حذف کاربر از Auth: {error_msg}"},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR

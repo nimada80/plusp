@@ -11,21 +11,25 @@ class CustomCsrfMiddleware(MiddlewareMixin):
     """
     def process_view(self, request, callback, callback_args, callback_kwargs):
         # مسیرهایی که باید از بررسی CSRF معاف شوند
-        exempt_paths = [
+        exempt_exact_paths = [
             '/backend/admin/login/',
             '/api/auth/login/',
             '/admin/login/',
-            '/api/users/',
         ]
         
-        # اگر مسیر درخواست در لیست معاف‌ها باشد، CSRF بررسی نشود
-        if any(request.path.startswith(path) for path in exempt_paths):
+        # الگوهای regex برای مسیرهایی که باید معاف شوند
+        exempt_patterns = [
+            r'^/api/users/.*$',  # تمام زیرمسیرهای /api/users/
+        ]
+        
+        # اگر مسیر درخواست دقیقاً در لیست معاف‌ها باشد، CSRF بررسی نشود
+        if any(request.path.startswith(path) for path in exempt_exact_paths) or any(re.match(pattern, request.path) for pattern in exempt_patterns):
             logger.debug(f"مسیر {request.path} از بررسی CSRF معاف شد")
             setattr(request, '_dont_enforce_csrf_checks', True)
             return None
             
         # لاگ کردن اطلاعات CSRF برای دیباگ
-        if request.method == 'POST':
+        if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
             logger.debug(f"CSRF token in cookie: {request.COOKIES.get('csrftoken', 'None')}")
             logger.debug(f"CSRF token in header: {request.META.get('HTTP_X_CSRFTOKEN', 'None')}")
             
