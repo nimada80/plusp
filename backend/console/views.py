@@ -108,6 +108,8 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return False
             
         try:
+            logger.info(f"شروع به‌روزرسانی کانال‌های کاربران: channel_id={channel_id}, user_ids={user_ids}")
+            
             # دریافت اطلاعات کانال فقط با استفاده از uid
             channel = _make_request('GET', f"/rest/v1/channels?uid=eq.{channel_id}")
             if channel is True or channel is None or (isinstance(channel, list) and len(channel) == 0):
@@ -117,7 +119,11 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # استخراج اطلاعات کانال
             if isinstance(channel, list) and len(channel) > 0:
                 channel = channel[0]
+                logger.info(f"اطلاعات کانال یافت شده: {channel}")
+            else:
+                logger.error(f"فرمت داده کانال نامعتبر است: {channel}")
                 
+            success_count = 0    
             # برای هر کاربر، لیست کانال‌ها را به‌روزرسانی کن
             for user_id in user_ids:
                 # دریافت اطلاعات کاربر
@@ -126,17 +132,31 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     logger.error(f"کاربر با شناسه {user_id} یافت نشد")
                     continue
 
-                user = user[0]
-                channels = user.get('allowed_channels', [])
+                if isinstance(user, list) and len(user) > 0:
+                    user = user[0]
+                
+                channels = user.get('allowed_channels', []) or []
+                logger.info(f"کانال‌های فعلی کاربر {user_id}: {channels}")
                 
                 # اگر کانال در لیست کانال‌های کاربر نیست، اضافه کن
                 if channel_id not in channels:
                     channels.append(channel_id)
-                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_channels': channels})
+                    logger.info(f"افزودن کانال {channel_id} به لیست کانال‌های کاربر {user_id}")
+                    result = _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_channels': channels})
+                    if result:
+                        success_count += 1
+                        logger.info(f"کانال {channel_id} با موفقیت به لیست کانال‌های کاربر {user_id} اضافه شد")
+                    else:
+                        logger.error(f"خطا در افزودن کانال {channel_id} به لیست کانال‌های کاربر {user_id}")
+                else:
+                    logger.info(f"کانال {channel_id} از قبل در لیست کانال‌های کاربر {user_id} وجود دارد")
+                    success_count += 1
 
-            return True
+            logger.info(f"نتیجه به‌روزرسانی کانال‌های کاربران: {success_count} از {len(user_ids)} کاربر با موفقیت به‌روزرسانی شدند")
+            return success_count > 0
         except Exception as e:
             logger.error(f"خطا در به‌روزرسانی کانال‌های کاربران: {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def _remove_user_channels(self, channel_id: str, user_ids: list):
@@ -248,44 +268,39 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # اگر channel_data یک boolean است (مثل True)، باید اطلاعات کانال را با یک درخواست GET دریافت کنیم
             if isinstance(channel_data, bool):
                 logger.info("پاسخ create_channel بولین بود. دریافت اطلاعات کانال با GET...")
-                uid = channel_data.get('uid') if isinstance(channel_data, dict) else None
+                # در این حالت نیاز به uid داریم که باید از جای دیگری دریافت شود
+                # باید کانال‌ها را بر اساس نام جستجو کنیم
                 
-                if uid:
-                    channel_data = _make_request('GET', f"/rest/v1/channels?uid=eq.{uid}")
-                    if isinstance(channel_data, list) and len(channel_data) > 0:
-                        channel_data = channel_data[0]
-                    else:
-                        logger.info(f"دریافت اطلاعات کانال با GET نتیجه‌ای نداشت: {channel_data}")
-                        # ایجاد یک پاسخ موفقیت‌آمیز ساختگی
-                        channel_data = {
-                            "id": None,  # ID واقعی در دسترس نیست
-                            "name": name,
-                            "allowed_users": allowed_users,
-                            "uid": uid,
-                            "created_at": datetime.datetime.now().isoformat()
-                        }
+                channels = _make_request('GET', f"/rest/v1/channels?name=eq.{name}")
+                if isinstance(channels, list) and len(channels) > 0:
+                    channel_data = channels[0]
+                    logger.info(f"کانال با نام {name} یافت شد: {channel_data}")
                 else:
-                    logger.info("شناسه uid برای دریافت کانال موجود نیست")
+                    logger.warning(f"کانال با نام {name} پس از ایجاد یافت نشد")
+                    # تولید شناسه جدید برای جلوگیری از خطا
+                    uid = str(uuid.uuid4())
                     channel_data = {
-                        "id": None,
+                        "id": None,  # ID واقعی در دسترس نیست
                         "name": name,
                         "allowed_users": allowed_users,
-                        "uid": str(uuid.uuid4()),
+                        "uid": uid,
                         "created_at": datetime.datetime.now().isoformat()
                     }
-
+            
             # به‌روزرسانی کانال‌های کاربران
-            if channel_data and 'allowed_users' in data and data['allowed_users'] and isinstance(data['allowed_users'], list):
+            if channel_data and allowed_users and isinstance(allowed_users, list) and len(allowed_users) > 0:
                 try:
                     # استفاده از uid به جای id
                     channel_id = channel_data.get('uid')
                     logger.info(f"شناسه کانال برای به‌روزرسانی کاربران: {channel_id}")
                     if channel_id:
-                        logger.info(f"به‌روزرسانی {len(data['allowed_users'])} کاربر با شناسه‌های: {data['allowed_users']}")
-                        result = self._update_user_channels(channel_id, data['allowed_users'])
+                        logger.info(f"به‌روزرسانی {len(allowed_users)} کاربر با شناسه‌های: {allowed_users}")
+                        result = self._update_user_channels(channel_id, allowed_users)
                         logger.info(f"نتیجه به‌روزرسانی کانال‌های کاربران: {'موفق' if result else 'ناموفق'}")
                     else:
                         logger.error("شناسه کانال (uid) در داده‌های کانال یافت نشد")
+                        # لاگ کامل داده‌های کانال برای عیب‌یابی
+                        logger.error(f"داده‌های کانال: {channel_data}")
                 except Exception as e:
                     logger.error(f"خطا در به‌روزرسانی کانال‌های کاربران: {e}")
                     logger.error(f"جزئیات خطا: {traceback.format_exc()}")
@@ -485,6 +500,7 @@ class UserViewSet(viewsets.ModelViewSet):
             return False
             
         success = True
+        logger.info(f"شروع به‌روزرسانی کاربران مجاز کانال‌ها: user_id={user_id}, channel_ids={channel_ids}")
 
         try:
             # برای هر کانال، لیست کاربران مجاز را به‌روزرسانی کن
@@ -498,22 +514,30 @@ class UserViewSet(viewsets.ModelViewSet):
                         continue
 
                     channel = channel[0]
-                    allowed_users = channel.get('allowed_users', [])
+                    allowed_users = channel.get('allowed_users', []) or []
+                    logger.info(f"کاربران مجاز فعلی کانال {channel_id}: {allowed_users}")
                     
                     # اگر کاربر در لیست کاربران مجاز نیست، اضافه کن
                     if user_id not in allowed_users:
                         allowed_users.append(user_id)
+                        logger.info(f"افزودن کاربر {user_id} به لیست کاربران مجاز کانال {channel_id}")
                         result = _make_request('PATCH', f"/rest/v1/channels?uid=eq.{channel_id}", {'allowed_users': allowed_users})
                         if not result:
                             logger.error(f"خطا در به‌روزرسانی کاربران مجاز برای کانال {channel_id}")
                             success = False
+                        else:
+                            logger.info(f"کاربر {user_id} با موفقیت به لیست کاربران مجاز کانال {channel_id} اضافه شد")
+                    else:
+                        logger.info(f"کاربر {user_id} از قبل در لیست کاربران مجاز کانال {channel_id} وجود دارد")
                 except Exception as e:
                     logger.error(f"خطا در پردازش کانال {channel_id}: {str(e)}")
+                    logger.error(traceback.format_exc())
                     success = False
 
             return success
         except Exception as e:
             logger.error(f"خطا در به‌روزرسانی کاربران مجاز کانال‌ها: {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def _remove_channel_users(self, user_id: str, channel_ids: list):

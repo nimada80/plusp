@@ -267,13 +267,23 @@ def create_channel(name: str, allowed_users: Optional[List[str]] = None) -> Dict
             if isinstance(created_channel, list) and len(created_channel) > 0:
                 return created_channel[0]
             
-            # ساخت یک پاسخ
+            # ساخت یک پاسخ با حاوی اطلاعات اصلی کانال
             return {
                 "success": True, 
                 "message": "کانال با موفقیت ایجاد شد", 
                 "uid": unique_uid,
-                "name": name
+                "name": name,
+                "allowed_users": allowed_users or []
             }
+            
+        # اگر پاسخ None یا False باشد، یک پاسخ با حداقل اطلاعات برگشت می‌دهیم
+        if response is None or response is False:
+            logger.error("خطا در ایجاد کانال - پاسخ خالی یا نامعتبر")
+            return None
+            
+        # اگر پاسخ یک لیست باشد، اولین آیتم را برگشت می‌دهیم
+        if isinstance(response, list) and len(response) > 0:
+            return response[0]
             
         return response
     except Exception as e:
