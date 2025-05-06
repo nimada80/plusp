@@ -7,7 +7,8 @@
  * @throws {Error} on HTTP or parsing error
  */
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost';
+// اصلاح آدرس پایه برای اضافه کردن پورت 8000 در صورت استفاده از localhost
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
 
 // Helper to read CSRF token cookie
 function getCookie(name) {
@@ -47,6 +48,14 @@ export const apiFetch = async (url, options = {}) => {
   const csrfToken = getCookie('csrftoken');
   if (csrfToken && ['POST', 'PUT', 'DELETE'].includes(mergedOptions.method)) {
     mergedOptions.headers['X-CSRFToken'] = csrfToken;
+  }
+  
+  // اضافه کردن لاگ برای دیباگ درخواست حذف
+  if (mergedOptions.method === 'DELETE') {
+    console.log(`درخواست حذف به ${API_BASE_URL}${url}`, {
+      headers: mergedOptions.headers,
+      method: mergedOptions.method
+    });
   }
   
   try {

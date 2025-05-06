@@ -1,7 +1,7 @@
 """
 console/serializers.py
 Defines Django REST framework serializers for User and Channel:
-- UserSerializer: handles user data and channel memberships via 'channels'.
+- UserSerializer: handles user data and channel memberships via 'allowed_channels'.
 - ChannelSerializer: handles channel data and authorized_users assignment.
 - SuperAdminSerializer: handles super admin data including credential and user limits.
 """
@@ -12,22 +12,22 @@ from django.contrib.auth.hashers import make_password
 
 class UserSerializer(serializers.ModelSerializer):
     """Serialize User with ID, username, active, role, and channel membership."""
-    # channels field links to Channel.allowed_channels relationship
-    channels = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=Channel.objects.all(),
-        source='allowed_channels'
-    )
+    # allowed_channels field is a JSONField that stores a list of channel IDs
+    allowed_channels = serializers.JSONField(required=False, default=list)
+    # password field is write-only and required only for create operations
+    password = serializers.CharField(write_only=True, required=False)
+
     class Meta:
         # Specifies model and fields to include in API
         model = User
-        fields = ['id', 'username', 'password', 'role', 'active', 'created_at', 'channels']
+        fields = ['uid', 'username', 'password', 'role', 'active', 'created_at', 'allowed_channels']
         # password should be write-only to avoid returning it in responses
-        extra_kwargs = {'password': {'write_only': True, 'required': False}}
+        extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):
         """Create a new user with validated data"""
         print(f"CREATE - IN SERIALIZER: {validated_data.get('password', 'No password')[:20]}...")  # Debug
+        # password handled in views.py through create_user function
         return super().create(validated_data)
     
     def update(self, instance, validated_data):
@@ -41,16 +41,14 @@ class UserSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 class ChannelSerializer(serializers.ModelSerializer):
-    """Serialize Channel with name, channel_id, and authorized user list."""
-    # authorized_users field links to User model
-    authorized_users = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=User.objects.all()
-    )
+    """Serialize Channel with name, uid, and authorized user list."""
+    # allowed_users field is a JSONField that stores a list of user IDs
+    allowed_users = serializers.JSONField(required=False, default=list)
+
     class Meta:
         # Specifies model and fields to include in API
         model = Channel
-        fields = ['id', 'name', 'channel_id', 'authorized_users']
+        fields = ['uid', 'name', 'allowed_users']
 
 class SuperAdminSerializer(serializers.ModelSerializer):
     """Serialize SuperAdmin with all fields except admin_super_password for reading."""

@@ -4,7 +4,7 @@
  * Supports CRUD operations and dual-list transfer UI with CSRF-protected API calls.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Button,
@@ -59,50 +59,55 @@ function UserManagement() {
 
   const [userSearchQuery, setUserSearchQuery] = useState('');
 
-  const filteredUsers = (users || []).filter((u) => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()));
+  const filteredUsers = useMemo(() => {
+    return (users || [])
+      .filter((u) => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()))
+      .sort((a, b) => a.username.localeCompare(b.username, 'fa')); // مرتب‌سازی بر اساس حروف فارسی
+  }, [users, userSearchQuery]);
 
   // Toggle selection of channels not assigned to user
   const handleSelectAvailable = (id) => {
-    setSelectedAvailable((prev) =>
-      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    setSelectedAvailable((prev) => 
+      prev.includes(id) ? prev.filter((cid) => cid !== id) : [...prev, id]
     );
   };
 
   // Toggle selection of channels already assigned to user
   const handleSelectAllowed = (id) => {
-    setSelectedAllowed((prev) =>
-      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    setSelectedAllowed((prev) => 
+      prev.includes(id) ? prev.filter((cid) => cid !== id) : [...prev, id]
     );
   };
 
   // Move selected channels between available and allowed lists
   const handleTransfer = (direction) => {
-    if (direction === 'right' && selectedAvailable.length > 0) {
+    if (direction === 'right') {
       setFormData((prev) => ({
         ...prev,
-        channels: [...new Set([...prev.channels, ...selectedAvailable])],
+        allowed_channels: [...new Set([...prev.allowed_channels, ...selectedAvailable])],
       }));
       setSelectedAvailable([]);
-    } else if (direction === 'left' && selectedAllowed.length > 0) {
+    } else {
       setFormData((prev) => ({
         ...prev,
-        channels: prev.channels.filter((cid) => !selectedAllowed.includes(cid)),
+        allowed_channels: prev.allowed_channels.filter((cid) => !selectedAllowed.includes(cid)),
       }));
       setSelectedAllowed([]);
     }
   };
 
-  const [channels, setChannels] = useState([]);
+  const [channelsList, setChannelsList] = useState([]);
   const [open, setOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
-  const [formData, setFormData] = useState({
+  const initialFormData = {
     username: '',
     password: '',
-    active: true,
     role: 'regular',
-    channels: [],
-  });
+    active: true,
+    allowed_channels: [],
+  };
+  const [formData, setFormData] = useState(initialFormData);
 
   const roles = [
     { value: 'regular', label: 'کاربر ساده' },
@@ -141,16 +146,24 @@ function UserManagement() {
     setError('');
     try {
       const data = await apiFetch('/api/channels/');
-      const formattedChannels = (data || []).map((channel) => ({
-        id: channel.id,
-        name: channel.name || `Channel ${channel.id}`,
-        channel_id: channel.channel_id || '',
-      }));
-      setChannels(formattedChannels);
+      // اگر داده‌ها آرایه خالی باشند، خطا نیست
+      if (Array.isArray(data)) {
+        const formattedChannels = data.map((channel) => ({
+          id: channel.uid,
+          name: channel.name || `Channel ${channel.uid}`,
+          channel_id: channel.channel_id || '',
+        }));
+        setChannelsList(formattedChannels);
+      } else {
+        setChannelsList([]);
+      }
     } catch (err) {
       console.error('خطا در دریافت کانال‌ها:', err);
-      setError('خطا در دریافت لیست کانال‌ها.');
-      setChannels([]);
+      // فقط در صورت خطای واقعی در ارتباط با سرور پیام خطا نمایش داده شود
+      if (err.name === 'TypeError' || err.message?.includes('Failed to fetch')) {
+        setError('خطا در ارتباط با سرور');
+      }
+      setChannelsList([]);
     } finally {
       setLoadingChannels(false);
     }
@@ -169,20 +182,14 @@ function UserManagement() {
       setFormData({
         username: user.username || '',
         password: '',
-        active: user.active !== undefined ? user.active : true,
         role: user.role || 'regular',
-        channels: Array.isArray(user.channels) ? user.channels : [],
+        active: typeof user.active === 'boolean' ? user.active : true,
+        allowed_channels: Array.isArray(user.allowed_channels) ? user.allowed_channels : [],
       });
     } else {
       setEditMode(false);
       setSelectedUser(null);
-      setFormData({
-        username: '',
-        password: '',
-        active: true,
-        role: 'regular',
-        channels: [],
-      });
+      setFormData(initialFormData);
     }
     setOpen(true);
   };
@@ -211,7 +218,7 @@ function UserManagement() {
       username: formData.username,
       role: formData.role,
       active: formData.active,
-      channels: formData.channels,
+      allowed_channels: formData.allowed_channels,
     };
 
     if (formData.password) {
@@ -226,7 +233,7 @@ function UserManagement() {
 
     try {
       if (editMode && selectedUser) {
-        await apiFetch(`/api/users/${selectedUser.id}/`, {
+        await apiFetch(`/api/users/${selectedUser.uid}/`, {
           method: 'PUT',
           body: JSON.stringify(payload),
         });
@@ -246,22 +253,81 @@ function UserManagement() {
 
   // Delete user by ID via API
   const handleDelete = async (userId) => {
+    // نمایش اطلاعات کاربر برای دیباگ
+    console.log(`درخواست حذف کاربر:`, userId);
+    
+    // بررسی انواع شناسه‌ها
+    if (!userId) {
+      console.error('شناسه کاربر برای حذف خالی است');
+      return;
+    }
+    
+    // بررسی نوع داده شناسه
+    console.log('نوع شناسه کاربر:', typeof userId);
+    
     setUserToDelete(userId);
     setDeleteConfirmOpen(true);
   };
 
   const handleDeleteConfirm = async () => {
-    if (!userToDelete) return;
+    if (!userToDelete) {
+      console.error('شناسه کاربر برای حذف تعیین نشده است');
+      return;
+    }
     
     setDeletingId(userToDelete);
     setDeleteError('');
     setError('');
     try {
-      await apiFetch(`/api/users/${userToDelete}/`, {
-        method: 'DELETE',
-      });
-      fetchUsers();
+      console.log(`شروع حذف کاربر با شناسه: ${userToDelete}`);
+      console.log(`آدرس API: /api/users/${userToDelete}/`);
+      
+      // نمایش توکن CSRF برای دیباگ
+      const csrfCookie = document.cookie
+        .split('; ')
+        .find(row => row.startsWith('csrftoken='));
+      const csrfToken = csrfCookie ? csrfCookie.split('=')[1] : 'توکن یافت نشد';
+      console.log(`CSRF Token: ${csrfToken}`);
+
+      // تست این درخواست با fetch مستقیم به جای apiFetch
+      try {
+        const baseUrl = process.env.REACT_APP_API_BASE_URL || 'http://localhost';
+        const apiUrl = `${baseUrl}/api/users/${userToDelete}/`;
+        console.log(`درخواست با fetch مستقیم به آدرس: ${apiUrl}`);
+        
+        const deleteResponse = await fetch(apiUrl, {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+          },
+          credentials: 'include',
+        });
+        
+        console.log(`نتیجه درخواست مستقیم: ${deleteResponse.status} ${deleteResponse.statusText}`);
+        
+        if (deleteResponse.ok) {
+          console.log('حذف با موفقیت انجام شد');
+          fetchUsers();
+        } else {
+          const errorText = await deleteResponse.text();
+          console.error(`خطای درخواست: ${errorText}`);
+          setDeleteError(`خطا در حذف کاربر: ${deleteResponse.status} ${deleteResponse.statusText}`);
+        }
+      } catch (fetchErr) {
+        console.error(`خطا در fetch مستقیم: ${fetchErr.message}`);
+        
+        // در صورت خطا در fetch مستقیم، از apiFetch استفاده کنیم
+        console.log('تلاش با استفاده از apiFetch...');
+        const response = await apiFetch(`/api/users/${userToDelete}/`, {
+          method: 'DELETE',
+        });
+        
+        console.log('پاسخ apiFetch:', response);
+        fetchUsers();
+      }
     } catch (err) {
+      console.error('خطا در حذف کاربر:', err);
       setDeleteError(err.message || 'خطا در حذف کاربر');
     } finally {
       setDeletingId(null);
@@ -275,11 +341,11 @@ function UserManagement() {
     setUserToDelete(null);
   };
 
-  const allowedChannelsDetails = channels.filter((c) => formData.channels.includes(c.id)).filter((c) =>
+  const allowedChannelsDetails = channelsList.filter((c) => formData.allowed_channels.includes(c.id)).filter((c) =>
     c.name.toLowerCase().includes(allowedSearchQuery.toLowerCase())
   );
 
-  const availableChannelsDetails = channels.filter((c) => !formData.channels.includes(c.id)).filter((c) =>
+  const availableChannelsDetails = channelsList.filter((c) => !formData.allowed_channels.includes(c.id)).filter((c) =>
     c.name.toLowerCase().includes(availableSearchQuery.toLowerCase())
   );
 
@@ -306,44 +372,47 @@ function UserManagement() {
       {deleteError && <Typography color="error" gutterBottom>{deleteError}</Typography>}
       <Paper sx={{ p: 2, mb: 2 }}>
         <TableContainer>
-          <Table size="small">
+          <Table size="small" sx={{ 
+            '& .MuiTableCell-root': { 
+              fontFamily: 'IRANSans, Vazirmatn, Roboto, Arial', 
+              fontSize: 14, 
+              padding: '8px 16px',
+              width: '25%'  // تنظیم عرض مساوی برای ستون‌ها
+            } 
+          }}>
             <TableHead>
               <TableRow>
-                <TableCell align="right">نام کاربری</TableCell>
-                <TableCell align="right">نقش</TableCell>
-                <TableCell align="right">وضعیت</TableCell>
-                <TableCell align="right">تعداد کانال‌ها</TableCell>
-                <TableCell align="center">اقدامات</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold' }}>نام کاربری</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold' }}>نقش</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold' }}>وضعیت</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 'bold' }}>اقدامات</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {loadingUsers ? (
                 <TableRow>
-                  <TableCell colSpan={5} align="center">در حال بارگذاری کاربران...</TableCell>
+                  <TableCell colSpan={4} align="center">در حال بارگذاری کاربران...</TableCell>
                 </TableRow>
-              ) : users.filter(u => u.username.toLowerCase().includes(userSearchQuery.toLowerCase())).length === 0 ? (
+              ) : filteredUsers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} align="center">کاربری یافت نشد.</TableCell>
+                  <TableCell colSpan={4} align="center">کاربری یافت نشد.</TableCell>
                 </TableRow>
               ) : (
-                users
-                  .filter(u => u.username.toLowerCase().includes(userSearchQuery.toLowerCase()))
-                  .map((user) => (
-                    <TableRow key={user.id} hover>
-                      <TableCell align="right">{user.username}</TableCell>
-                      <TableCell align="right">{roles.find((r) => r.value === user.role)?.label || user.role}</TableCell>
-                      <TableCell align="right">{user.active ? 'فعال' : 'غیرفعال'}</TableCell>
-                      <TableCell align="right">{user.channels?.length || 0}</TableCell>
-                      <TableCell align="center">
-                        <IconButton color="primary" size="small" onClick={() => handleClickOpen(user)}>
-                          <EditIcon />
-                        </IconButton>
-                        <IconButton color="error" size="small" onClick={() => handleDelete(user.id)} disabled={deletingId === user.id}>
-                          {deletingId === user.id ? '...' : <DeleteIcon />}
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                filteredUsers.map((user) => (
+                  <TableRow key={user.uid} hover>
+                    <TableCell align="right">{user.username}</TableCell>
+                    <TableCell align="right">{roles.find((r) => r.value === user.role)?.label || user.role}</TableCell>
+                    <TableCell align="right">{user.active ? 'فعال' : 'غیرفعال'}</TableCell>
+                    <TableCell align="center">
+                      <IconButton color="primary" size="small" onClick={() => handleClickOpen(user)}>
+                        <EditIcon />
+                      </IconButton>
+                      <IconButton color="error" size="small" onClick={() => handleDelete(user.uid)} disabled={deletingId === user.uid}>
+                        {deletingId === user.uid ? '...' : <DeleteIcon />}
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
             </TableBody>
           </Table>
@@ -404,7 +473,7 @@ function UserManagement() {
             variant="h6"
             sx={{ mt: 2, mb: 1, textAlign: 'center' }}
           >
-            مدیریت کانال های مجاز
+            مدیریت کانال‌های مجاز
           </Typography>
           <Grid container spacing={2} justifyContent="center" alignItems="flex-start">
             <Grid item xs={5}>
@@ -420,8 +489,8 @@ function UserManagement() {
               />
               <Paper sx={{ width: '100%', height: 250, overflow: 'auto', direction: 'rtl' }}>
                 <List dense component="div" role="list">
-                  {channels
-                    .filter((c) => !formData.channels.includes(c.id) && c.name.toLowerCase().includes(availableSearchQuery.toLowerCase()))
+                  {channelsList
+                    .filter((c) => !formData.allowed_channels.includes(c.id) && c.name.toLowerCase().includes(availableSearchQuery.toLowerCase()))
                     .map((channel) => (
                       <ListItem
                         key={channel.id}
@@ -468,8 +537,8 @@ function UserManagement() {
               />
               <Paper sx={{ width: '100%', height: 250, overflow: 'auto', direction: 'rtl' }}>
                 <List dense component="div" role="list">
-                  {channels
-                    .filter((c) => formData.channels.includes(c.id) && c.name.toLowerCase().includes(allowedSearchQuery.toLowerCase()))
+                  {channelsList
+                    .filter((c) => formData.allowed_channels.includes(c.id) && c.name.toLowerCase().includes(allowedSearchQuery.toLowerCase()))
                     .map((channel) => (
                       <ListItem
                         key={channel.id}

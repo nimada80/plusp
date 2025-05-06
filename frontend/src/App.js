@@ -1,6 +1,6 @@
 import React from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { AppBar, Toolbar, Typography, Box, ThemeProvider, CssBaseline, Button, IconButton, Tooltip } from '@mui/material';
+import { AppBar, Toolbar, Typography, Box, ThemeProvider, CssBaseline, Button } from '@mui/material';
 import { CacheProvider } from '@emotion/react';
 import createCache from '@emotion/cache';
 import rtlPlugin from 'stylis-plugin-rtl';
@@ -22,19 +22,6 @@ function App() {
   const navigate = useNavigate();
   // Location hook to detect current path
   const location = useLocation();
-  
-  // تابع پاک کردن کنسول
-  const clearConsole = () => {
-    // استفاده از متد clear اصلی به جای متد بازنویسی شده
-    if (window._originalConsole && window._originalConsole.clear) {
-      window._originalConsole.clear();
-    } else {
-      console.clear();
-    }
-    
-    // پیام تأیید با استفاده از متد error (تنها متد فعال)
-    console.error('کنسول پاک شد');
-  };
   
   // Logout handler: calls logout API and redirects to login page
   const handleLogout = async () => {
@@ -72,15 +59,6 @@ function App() {
                   <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
                     پنل مدیریت
                   </Typography>
-                  <Tooltip title="پاک کردن کنسول مرورگر">
-                    <Button 
-                      color="info" 
-                      onClick={clearConsole} 
-                      sx={{ ml: 1 }}
-                    >
-                      پاک کردن کنسول
-                    </Button>
-                  </Tooltip>
                   <Button color="error" onClick={handleLogout}>خروج</Button>
                 </Toolbar>
               </AppBar>
@@ -100,20 +78,20 @@ function App() {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/" element={
-  <RequireAuth>
-    <ChannelManagement />
-  </RequireAuth>
-} />
+                <RequireAuth>
+                  <ChannelManagement />
+                </RequireAuth>
+              } />
               <Route path="/channels" element={
-  <RequireAuth>
-    <ChannelManagement />
-  </RequireAuth>
-} />
-<Route path="/users" element={
-  <RequireAuth>
-    <UserManagement />
-  </RequireAuth>
-} />
+                <RequireAuth>
+                  <ChannelManagement />
+                </RequireAuth>
+              } />
+              <Route path="/users" element={
+                <RequireAuth>
+                  <UserManagement />
+                </RequireAuth>
+              } />
             </Routes>
           </Box>
         </Box>

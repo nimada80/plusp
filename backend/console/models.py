@@ -33,14 +33,17 @@ class Channel(models.Model):
     - channel_id: unique random integer identifier
     - name: channel display name
     - authorized_users: users permitted to access this channel
+    - uid: unique identifier string
     """
     # Unique, non-editable random ID generated on save
     channel_id = models.PositiveIntegerField(unique=True, editable=False, null=False)
     # Human-readable channel name
     name = models.CharField(max_length=255)
+    # Unique identifier string (added to match migration 0011)
+    uid = models.CharField(max_length=50, unique=True, editable=False, null=True)
     # Many-to-many relation to console.User for access control
     authorized_users = models.ManyToManyField(
-        'User', blank=True, related_name='allowed_channels'
+        'User', blank=True, related_name='channel_access'
     )
 
     def save(self, *args, **kwargs):
@@ -62,18 +65,18 @@ class Channel(models.Model):
 class User(models.Model):
     """
     Custom user model stored in 'users' table:
-    - id: UUID primary key
+    - uid: UUID primary key
     - username: unique login name
     - role: user role identifier
     - active: account status flag
     - created_at: timestamp of account creation
-    - channels: list of channel IDs
+    - allowed_channels: list of channel UIDs
     """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    uid = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     username = models.CharField(max_length=255, unique=True)
     role = models.CharField(max_length=50)
     active = models.BooleanField(default=True)
-    channels = models.JSONField(default=list)
+    allowed_channels = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

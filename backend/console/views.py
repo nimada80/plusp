@@ -127,12 +127,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     continue
 
                 user = user[0]
-                channels = user.get('allowed_users', [])
+                channels = user.get('allowed_channels', [])
                 
                 # اگر کانال در لیست کانال‌های کاربر نیست، اضافه کن
                 if channel_id not in channels:
                     channels.append(channel_id)
-                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_users': channels})
+                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_channels': channels})
 
             return True
         except Exception as e:
@@ -168,12 +168,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 if isinstance(user, list) and len(user) > 0:
                     user = user[0]
                 
-                channels = user.get('allowed_users', [])
+                channels = user.get('allowed_channels', [])
                 
                 # اگر کانال در لیست کانال‌های کاربر است، حذف کن
                 if channel_id in channels:
                     channels.remove(channel_id)
-                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_users': channels})
+                    _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_channels': channels})
 
             return True
         except Exception as e:
@@ -223,6 +223,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             name = data.get('name', '')
             allowed_users = data.get('allowed_users', [])
             
+            # بررسی تکراری بودن نام کانال
+            if name:
+                # دریافت تمام کانال‌ها با این نام
+                existing_channels = _make_request('GET', f"/rest/v1/channels?name=eq.{name}")
+                
+                # اگر کانالی با این نام وجود داشت، خطا بده
+                if existing_channels and (isinstance(existing_channels, list) and len(existing_channels) > 0):
+                    return Response(
+                        {"detail": f"کانالی با نام '{name}' از قبل وجود دارد"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
             # استفاده از تابع create_channel
             logger.info(f"ایجاد کانال جدید با نام '{name}'")
             channel_data = create_channel(name=name, allowed_users=allowed_users)
@@ -265,11 +277,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # به‌روزرسانی کانال‌های کاربران
             if channel_data and 'allowed_users' in data and data['allowed_users'] and isinstance(data['allowed_users'], list):
                 try:
-                    channel_id = channel_data.get('id')
+                    # استفاده از uid به جای id
+                    channel_id = channel_data.get('uid')
+                    logger.info(f"شناسه کانال برای به‌روزرسانی کاربران: {channel_id}")
                     if channel_id:
-                        self._update_user_channels(channel_id, data['allowed_users'])
+                        logger.info(f"به‌روزرسانی {len(data['allowed_users'])} کاربر با شناسه‌های: {data['allowed_users']}")
+                        result = self._update_user_channels(channel_id, data['allowed_users'])
+                        logger.info(f"نتیجه به‌روزرسانی کانال‌های کاربران: {'موفق' if result else 'ناموفق'}")
+                    else:
+                        logger.error("شناسه کانال (uid) در داده‌های کانال یافت نشد")
                 except Exception as e:
                     logger.error(f"خطا در به‌روزرسانی کانال‌های کاربران: {e}")
+                    logger.error(f"جزئیات خطا: {traceback.format_exc()}")
                     # این خطا نباید باعث شکست کل عملیات شود
                 
             return Response(channel_data, status=status.HTTP_201_CREATED)
@@ -328,6 +347,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # اگر پاسخ یک لیست است، اولین آیتم را استفاده کن
             if isinstance(current_channel, list) and len(current_channel) > 0:
                 current_channel = current_channel[0]
+            
+            # بررسی تکراری بودن نام جدید کانال
+            if 'name' in data and data['name'] and data['name'] != current_channel.get('name'):
+                # دریافت تمام کانال‌ها با این نام
+                existing_channels = _make_request('GET', f"/rest/v1/channels?name=eq.{data['name']}")
+                
+                # اگر کانالی با این نام وجود داشت، خطا بده
+                if existing_channels and (isinstance(existing_channels, list) and len(existing_channels) > 0):
+                    return Response(
+                        {"detail": f"کانالی با نام '{data['name']}' از قبل وجود دارد"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
             
             # به‌روزرسانی کانال
             response = _make_request('PATCH', f"/rest/v1/channels?uid=eq.{pk}", data)
@@ -397,8 +428,27 @@ class ChannelViewSet(viewsets.ModelViewSet):
             # اگر پاسخ یک لیست است، اولین آیتم را استفاده می‌کنیم
             if isinstance(channel, list) and len(channel) > 0:
                 channel = channel[0]
+            
+            # گام 1: حذف کانال از لیست کانال‌های مجاز تمام کاربرانی که به این کانال دسترسی داشته‌اند
+            try:
+                # دریافت تمامی کاربران
+                users = _make_request('GET', f"/rest/v1/users")
                 
-            # حذف کانال از جدول channels با استفاده از uid
+                if users and isinstance(users, list):
+                    for user in users:
+                        user_id = user.get('uid')
+                        allowed_channels = user.get('allowed_channels', [])
+                        
+                        # اگر کانال در لیست کانال‌های مجاز کاربر وجود دارد، آن را حذف کن
+                        if pk in allowed_channels:
+                            allowed_channels.remove(pk)
+                            _make_request('PATCH', f"/rest/v1/users?uid=eq.{user_id}", {'allowed_channels': allowed_channels})
+                            logger.info(f"کانال {pk} از لیست کانال‌های مجاز کاربر {user_id} حذف شد")
+            except Exception as e:
+                logger.error(f"خطا در حذف کانال از لیست کانال‌های مجاز کاربران: {e}")
+                # ادامه اجرا، زیرا این مرحله نباید کل فرآیند را متوقف کند
+                
+            # گام 2: حذف کانال از جدول channels با استفاده از uid
             delete_response = _make_request('DELETE', f"/rest/v1/channels?uid=eq.{pk}")
             
             if delete_response is None:
@@ -584,9 +634,18 @@ class UserViewSet(viewsets.ModelViewSet):
             # به‌روزرسانی کانال‌ها برای کاربر جدید
             if valid_channels:
                 try:
-                    self._update_channel_users(user_data.get('id'), valid_channels)
+                    # استفاده از uid به جای id
+                    user_uid = user_data.get('uid')
+                    logger.info(f"شناسه کاربر برای به‌روزرسانی کانال‌ها: {user_uid}")
+                    if user_uid:
+                        logger.info(f"به‌روزرسانی {len(valid_channels)} کانال با شناسه‌های: {valid_channels}")
+                        result = self._update_channel_users(user_uid, valid_channels)
+                        logger.info(f"نتیجه به‌روزرسانی کانال‌های کاربر: {'موفق' if result else 'ناموفق'}")
+                    else:
+                        logger.error("شناسه کاربر (uid) در داده‌های کاربر یافت نشد")
                 except Exception as e:
                     logger.error(f"خطا در به‌روزرسانی کانال‌های کاربر: {e}")
+                    logger.error(f"جزئیات خطا: {traceback.format_exc()}")
                     # این خطا نباید باعث شکست کل عملیات شود
                 
             return Response(
@@ -717,16 +776,16 @@ class UserViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
                 
-                # به‌روزرسانی کاربران مجاز کانال‌ها
+                # به‌روزرسانی کانال‌های مجاز کاربران در جدول channels
                 if 'allowed_channels' in data:
                     try:
                         # حذف کاربر از لیست کاربران مجاز کانال‌هایی که دیگر در لیست کانال‌های کاربر نیستند
-                        removed_channels = list(set(current_user.get('allowed_users', [])) - set(data['allowed_channels']))
+                        removed_channels = list(set(current_user.get('allowed_channels', [])) - set(data['allowed_channels']))
                         if removed_channels:
                             self._remove_channel_users(pk, removed_channels)
 
                         # اضافه کردن کاربر به لیست کاربران مجاز کانال‌های جدید
-                        new_channels = list(set(data['allowed_channels']) - set(current_user.get('allowed_users', [])))
+                        new_channels = list(set(data['allowed_channels']) - set(current_user.get('allowed_channels', [])))
                         if new_channels:
                             self._update_channel_users(pk, new_channels)
                     except Exception as channel_err:
@@ -792,19 +851,51 @@ class UserViewSet(viewsets.ModelViewSet):
             # نگهداری داده‌های اصلی برای بازگشت در صورت خطا
             original_user = user.copy()
             
-            # مرحله 1: آماده‌سازی - حذف ارتباطات کاربر با کانال‌ها
-            relations_removed = False
+            # مرحله 1: حذف کاربر از لیست کاربران مجاز تمام کانال‌ها
             try:
-                # حذف کاربر از لیست کاربران مجاز کانال‌ها
-                if 'allowed_channels' in user and user['allowed_channels']:
-                    self._remove_channel_users(pk, user['allowed_channels'])
-                    logger.info(f"ارتباطات کاربر {pk} با کانال‌ها با موفقیت حذف شد")
-                relations_removed = True
-            except Exception as rel_err:
-                logger.error(f"خطا در حذف ارتباطات کاربر {pk} با کانال‌ها: {rel_err}")
-                # ادامه می‌دهیم زیرا این مرحله حیاتی نیست
+                # دریافت تمامی کانال‌ها
+                channels = _make_request('GET', f"/rest/v1/channels")
+                
+                if channels and isinstance(channels, list):
+                    for channel in channels:
+                        channel_id = channel.get('uid')
+                        allowed_users = channel.get('allowed_users', [])
+                        
+                        # اگر کاربر در لیست کاربران مجاز کانال وجود دارد، آن را حذف کن
+                        if pk in allowed_users:
+                            allowed_users.remove(pk)
+                            _make_request('PATCH', f"/rest/v1/channels?uid=eq.{channel_id}", {'allowed_users': allowed_users})
+                            logger.info(f"کاربر {pk} از لیست کاربران مجاز کانال {channel_id} حذف شد")
+            except Exception as e:
+                logger.error(f"خطا در حذف کاربر از لیست کاربران مجاز کانال‌ها: {e}")
+                # ادامه اجرا، زیرا این مرحله نباید کل فرآیند را متوقف کند
             
-            # مرحله 2: حذف کاربر از Supabase Auth (اول Auth حذف می‌کنیم، سپس جدول users)
+            # مرحله 2: حذف کاربر از جدول users
+            users_deleted = False
+            try:
+                logger.info(f"تلاش برای حذف کاربر {pk} از جدول users")
+                users_response = _make_request('DELETE', f"/rest/v1/users?uid=eq.{pk}")
+
+                if users_response is None:
+                    # بررسی آیا کاربر واقعاً حذف شده است
+                    check_user = _make_request('GET', f"/rest/v1/users?uid=eq.{pk}")
+                    if check_user is None or (isinstance(check_user, list) and len(check_user) == 0):
+                        users_deleted = True
+                        logger.info(f"کاربر {pk} با موفقیت از جدول users حذف شد")
+                    else:
+                        logger.error(f"خطا در حذف کاربر {pk} از جدول users - کاربر همچنان وجود دارد")
+                        return Response(
+                            {"detail": "خطا در حذف کاربر از جدول users"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                        )
+                else:
+                    users_deleted = True
+                    logger.info(f"کاربر {pk} با موفقیت از جدول users حذف شد")
+                
+            except Exception as users_err:
+                logger.error(f"خطا در حذف کاربر {pk} از جدول users: {users_err}")
+                
+            # مرحله 3: حذف کاربر از Supabase Auth (اول Auth حذف می‌کنیم، سپس جدول users)
             auth_deleted = False
             try:
                 logger.info(f"تلاش برای حذف کاربر {pk} از Auth")
@@ -846,7 +937,7 @@ class UserViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
             
-            # مرحله 3: حذف کاربر از جدول users
+            # مرحله 4: حذف کاربر از جدول users
             users_deleted = False
             if auth_deleted:
                 try:
@@ -884,7 +975,7 @@ class UserViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR
                         )
             
-            # مرحله 4: برگرداندن پاسخ نهایی
+            # مرحله 5: برگرداندن پاسخ نهایی
             if users_deleted and auth_deleted:
                 return Response(
                     {"detail": f"کاربر {pk} با موفقیت حذف شد"},
@@ -1115,7 +1206,7 @@ def client_auth_view(request):
             )
             
         # دریافت کانال‌های مجاز کاربر
-        user_channels = user.get('allowed_users', [])
+        user_channels = user.get('allowed_channels', [])
         
         # بررسی وجود کانال مجاز
         if not user_channels or len(user_channels) == 0:

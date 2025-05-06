@@ -25,7 +25,10 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  IconButton,
 } from '@mui/material';
+import DeleteIcon from '@mui/icons-material/Delete';
+import EditIcon from '@mui/icons-material/Edit';
 import { apiFetch } from '../utils/api';
 
 /**
@@ -57,7 +60,7 @@ function ChannelManagement() {
   const [selectedChannel, setSelectedChannel] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
-    authorized_users: [],
+    allowed_users: [],
   });
 
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -68,11 +71,13 @@ function ChannelManagement() {
     // محافظت: اطمینان از آرایه بودن channels
     const safeChannels = Array.isArray(channels) ? channels : [];
     
-    return safeChannels.filter(c => {
-      if (!c || typeof c !== 'object') return false;
-      if (!c.name) return false;
-      return c.name.toLowerCase().includes((channelSearchQuery || '').toLowerCase());
-    });
+    return safeChannels
+      .filter(c => {
+        if (!c || typeof c !== 'object') return false;
+        if (!c.name) return false;
+        return c.name.toLowerCase().includes((channelSearchQuery || '').toLowerCase());
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'fa')); // مرتب‌سازی بر اساس حروف فارسی
   }, [channels, channelSearchQuery]);
 
   // Fetch all channels from backend
@@ -176,14 +181,14 @@ function ChannelManagement() {
       setSelectedChannel(channel);
       setFormData({
         name: channel.name || '',
-        authorized_users: Array.isArray(channel.authorized_users) ? channel.authorized_users : [],
+        allowed_users: Array.isArray(channel.allowed_users) ? channel.allowed_users : [],
       });
     } else {
       setEditMode(false);
       setSelectedChannel(null);
       setFormData({
         name: '',
-        authorized_users: [],
+        allowed_users: [],
       });
     }
     setOpen(true);
@@ -208,13 +213,13 @@ function ChannelManagement() {
     if (direction === 'right' && selectedAvailable.length > 0) {
       setFormData((prev) => ({
         ...prev,
-        authorized_users: [...new Set([...prev.authorized_users, ...selectedAvailable])],
+        allowed_users: [...new Set([...prev.allowed_users, ...selectedAvailable])],
       }));
       setSelectedAvailable([]);
     } else if (direction === 'left' && selectedAllowed.length > 0) {
       setFormData((prev) => ({
         ...prev,
-        authorized_users: prev.authorized_users.filter((uid) => !selectedAllowed.includes(uid)),
+        allowed_users: prev.allowed_users.filter((uid) => !selectedAllowed.includes(uid)),
       }));
       setSelectedAllowed([]);
     }
@@ -225,11 +230,11 @@ function ChannelManagement() {
     setError('');
     const payload = {
       name: formData.name,
-      authorized_users: formData.authorized_users,
+      allowed_users: formData.allowed_users,
     };
     try {
       if (editMode && selectedChannel) {
-        await apiFetch(`/api/channels/${selectedChannel.id}/`, {
+        await apiFetch(`/api/channels/${selectedChannel.uid}/`, {
           method: 'PUT',
           body: JSON.stringify(payload),
         });
@@ -279,12 +284,12 @@ function ChannelManagement() {
 
   // Dual list details
   const allowedUsersDetails = Array.isArray(users) 
-    ? users.filter((u) => Array.isArray(formData.authorized_users) && formData.authorized_users.includes(u.id))
+    ? users.filter((u) => Array.isArray(formData.allowed_users) && formData.allowed_users.includes(u.uid))
           .filter((u) => u.username.toLowerCase().includes((allowedSearchQuery || '').toLowerCase()))
     : [];
 
   const availableUsersDetails = Array.isArray(users)
-    ? users.filter((u) => !Array.isArray(formData.authorized_users) || !formData.authorized_users.includes(u.id))
+    ? users.filter((u) => !Array.isArray(formData.allowed_users) || !formData.allowed_users.includes(u.uid))
           .filter((u) => u.username.toLowerCase().includes((availableSearchQuery || '').toLowerCase()))
     : [];
 
@@ -320,27 +325,16 @@ function ChannelManagement() {
     }
 
     return filteredChannels.map((channel) => (
-      <TableRow key={channel.id}>
-        <TableCell>{channel.name}</TableCell>
-        <TableCell>{channel.description || '-'}</TableCell>
-        <TableCell>{channel.authorized_users?.length || 0}</TableCell>
-        <TableCell>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={() => handleClickOpen(channel)}
-            sx={{ mr: 1 }}
-          >
-            ویرایش
-          </Button>
-          <Button
-            variant="outlined"
-            color="error"
-            size="small"
-            onClick={() => handleDelete(channel.id)}
-          >
-            حذف
-          </Button>
+      <TableRow key={channel.uid || crypto.randomUUID()}>
+        <TableCell align="right">{channel.name}</TableCell>
+        <TableCell align="center">{channel.allowed_users?.length || 0}</TableCell>
+        <TableCell align="center">
+          <IconButton color="primary" size="small" onClick={() => handleClickOpen(channel)}>
+            <EditIcon />
+          </IconButton>
+          <IconButton color="error" size="small" onClick={() => handleDelete(channel.uid)} disabled={deletingId === channel.uid}>
+            {deletingId === channel.uid ? '...' : <DeleteIcon />}
+          </IconButton>
         </TableCell>
       </TableRow>
     ));
@@ -369,13 +363,12 @@ function ChannelManagement() {
       {deleteError && <Typography color="error" gutterBottom>{deleteError}</Typography>}
       <Paper sx={{ p: 2, mb: 2 }}>
         <TableContainer>
-          <Table size="small">
+          <Table size="small" sx={{ '& .MuiTableCell-root': { fontFamily: 'IRANSans, Vazirmatn, Roboto, Arial', fontSize: 14, padding: '8px 16px' } }}>
             <TableHead>
               <TableRow>
-                <TableCell align="right">نام کانال</TableCell>
-                <TableCell align="right">توضیح</TableCell>
-                <TableCell align="right">تعداد کاربران مجاز</TableCell>
-                <TableCell align="center">اقدامات</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 'bold' }}>نام کانال</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 'bold' }}>تعداد کاربران</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 'bold' }}>اقدامات</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -422,11 +415,11 @@ function ChannelManagement() {
                 <List dense component="div" role="list">
                   {availableUsersDetails.map((user) => (
                     <ListItem
-                      key={user.id}
+                      key={user.uid}
                       button
-                      selected={selectedAvailable.includes(user.id)}
-                      onClick={() => setSelectedAvailable((prev) => prev.includes(user.id) ? prev.filter((i) => i !== user.id) : [...prev, user.id])}
-                      sx={selectedAvailable.includes(user.id) ? { bgcolor: '#90caf9 !important' } : {}}
+                      selected={selectedAvailable.includes(user.uid)}
+                      onClick={() => setSelectedAvailable((prev) => prev.includes(user.uid) ? prev.filter((i) => i !== user.uid) : [...prev, user.uid])}
+                      sx={selectedAvailable.includes(user.uid) ? { bgcolor: '#90caf9 !important' } : {}}
                     >
                       <ListItemText primary={user.username} sx={{ textAlign: 'center' }} />
                     </ListItem>
@@ -470,11 +463,11 @@ function ChannelManagement() {
                 <List dense component="div" role="list">
                   {allowedUsersDetails.map((user) => (
                     <ListItem
-                      key={user.id}
+                      key={user.uid}
                       button
-                      selected={selectedAllowed.includes(user.id)}
-                      onClick={() => setSelectedAllowed((prev) => prev.includes(user.id) ? prev.filter((i) => i !== user.id) : [...prev, user.id])}
-                      sx={selectedAllowed.includes(user.id) ? { bgcolor: '#90caf9 !important' } : {}}
+                      selected={selectedAllowed.includes(user.uid)}
+                      onClick={() => setSelectedAllowed((prev) => prev.includes(user.uid) ? prev.filter((i) => i !== user.uid) : [...prev, user.uid])}
+                      sx={selectedAllowed.includes(user.uid) ? { bgcolor: '#90caf9 !important' } : {}}
                     >
                       <ListItemText primary={user.username} sx={{ textAlign: 'center' }} />
                     </ListItem>
