@@ -9,8 +9,6 @@ psycopg2-binary==2.9.10
 
 # سرویس‌های خارجی و API
 supabase==2.15.1
-livekit==1.0.6
-livekit-api==1.0.2
 requests==2.31.0
 
 # مدیریت محیط و تنظیمات

@@ -1,8 +1,7 @@
 #!/bin/bash
 set -e
 
-# اضافه کردن نصب پکیج های مورد نیاز
-pip install livekit-api==1.0.2
+# نصب livekit حذف شد
 
 # اجرای مهاجرت‌های دیتابیس
 python manage.py migrate --noinput

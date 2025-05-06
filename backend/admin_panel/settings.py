@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# اطمینان از بارگذاری متغیرهای محیطی از فایل .env در پوشه docker
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'docker', '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path)
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -21,12 +26,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-$uy+k_gm)^s8ih5lfaangra6u+10g^9%3r5)s8evk(5vjyei%*')
+# استفاده از متغیر محیطی DJANGO_SECRET_KEY
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+
+# هشدار اگر کلید مخفی تنظیم نشده باشد
+if not SECRET_KEY:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error("DJANGO_SECRET_KEY متغیر محیطی تنظیم نشده است! از کلید پیش‌فرض ناامن استفاده می‌شود.")
+    SECRET_KEY = 'django-insecure-$uy+k_gm)^s8ih5lfaangra6u+10g^9%3r5)s8evk(5vjyei%*'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# استفاده از متغیر محیطی DJANGO_DEBUG (True در محیط توسعه، False در محیط تولید)
+DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+# تنظیم میزبان‌های مجاز از طریق متغیر محیطی
+default_hosts = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', ','.join(default_hosts)).split(',')
 
 # CORS configuration - غیر فعال شده چون توسط nginx مدیریت می‌شود
 # CORS_ALLOWED_ORIGINS = []
