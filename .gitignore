@@ -64,8 +64,12 @@ docker/volumes/
 *.code-workspace
 
 # Database
+# به جز فایل‌های مورد نیاز برای LiveKit
 *.rdb
-livekit/redis-data/
+!livekit/redis-data/dump.rdb
+livekit/redis-data/appendonlydir/*.aof
+!livekit/redis-data/appendonlydir/appendonly.aof.manifest
+!livekit/redis-data/appendonlydir/appendonly.aof.1.base.rdb
 
 # Backup files
 *.bak
