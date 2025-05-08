@@ -1,0 +1,22 @@
+{
+  "name": "plusptt-auth-service",
+  "version": "1.0.0",
+  "description": "سرویس احراز هویت و دریافت توکن LiveKit برای کاربران",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.0.0",
+    "@fastify/env": "^4.2.0",
+    "axios": "^1.4.0",
+    "dotenv": "^16.3.1",
+    "fastify": "^4.17.0",
+    "livekit-server-sdk": "^1.2.6",
+    "@supabase/supabase-js": "^2.26.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+} 
