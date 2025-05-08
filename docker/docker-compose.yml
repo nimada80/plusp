@@ -70,7 +70,9 @@ services:
       # NEXT_ANALYTICS_BACKEND_PROVIDER: bigquery
 
   backend:
-    image: plusptt-backend:latest
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
     container_name: plusptt-backend
     volumes:
       - ../backend:/app
@@ -119,6 +121,8 @@ services:
 
   auth:
     container_name: supabase-auth
+    env_file:
+      - .env
     image: supabase/gotrue:v2.171.0
     restart: unless-stopped
     healthcheck:
@@ -140,8 +144,6 @@ services:
         condition: service_healthy
       analytics:
         condition: service_healthy
-    env_file:
-      - .env
     environment:
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
@@ -364,32 +366,6 @@ services:
       PG_META_DB_USER: supabase_admin
       PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
 
-  functions:
-    container_name: supabase-edge-functions
-    image: supabase/edge-runtime:v1.67.4
-    restart: unless-stopped
-    volumes:
-      - ./volumes/functions:/home/deno/functions:Z
-    depends_on:
-      analytics:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      JWT_SECRET: ${JWT_SECRET}
-      SUPABASE_URL: http://kong:8000
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      SUPABASE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-      # TODO: Allow configuring VERIFY_JWT per function. This PR might help: https://github.com/supabase/cli/pull/786
-      VERIFY_JWT: "${FUNCTIONS_VERIFY_JWT}"
-    command:
-      [
-        "start",
-        "--main-service",
-        "/home/deno/functions/main"
-      ]
-
   analytics:
     container_name: supabase-analytics
     image: supabase/logflare:1.12.0
@@ -602,6 +578,32 @@ services:
       - default
     environment:
       - REACT_APP_API_BASE_URL=http://localhost
+
+  node:
+    container_name: plusptt-node
+    build:
+      context: ../node
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+    depends_on:
+      - db
+      - auth
+      - rest
+      - livekit
+    volumes:
+      - ./.env:/docker/.env:ro
+    environment:
+      - SUPABASE_URL=http://kong:8000
+      - SUPABASE_SERVICE_ROLE_KEY=${SERVICE_ROLE_KEY}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - LIVEKIT_HOST=livekit:7880
+      - AUTH_SERVICE_PORT=3030
+      - AUTH_SERVICE_HOST=0.0.0.0
+    networks:
+      - default
 
   # سرویس‌های LiveKit
   livekit:
